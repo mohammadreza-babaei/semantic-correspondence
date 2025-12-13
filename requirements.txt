@@ -5,3 +5,5 @@ matplotlib
 timm           # Excellent for loading ViT/DINO models
 opencv-python  # For image manipulation
 scipy          # Useful for distance calculations in PCK
+datasets
+
