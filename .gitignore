@@ -172,3 +172,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+
+# Ignore the entire data folder (raw images, jsons, and extracted tar files)
+data/
