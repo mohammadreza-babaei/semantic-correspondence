@@ -4,11 +4,13 @@
 
 import json
 import os
+import shutil
+import tarfile
+import urllib.request
 import numpy as np
 import datasets
 from datasets import BuilderConfig, Features, Value, SplitGenerator, Split, ClassLabel, Array2D, Sequence, Image
 from pathlib import Path
-
 
 _CITATION = """\
 @article{min2019spair,
@@ -55,30 +57,8 @@ class SPair71k(datasets.GeneratorBasedBuilder):
 
     @classmethod
     def set_url_override(cls, url):
-        """
-        Set a custom URL or local file path for the dataset.
-        
-        Args:
-            url: A URL string or local file path (with file:// prefix or absolute path)
-        """
+        """Set a custom URL or local file path for the dataset."""
         cls._url_override = url
-
-    @classmethod
-    def get_data_url(cls):
-        """
-        Get the data URL, checking for overrides in order of priority:
-        1. Class-level override (set via set_url_override)
-        2. Environment variable SPAIR_URL
-        3. Default URL
-        """
-        if cls._url_override:
-            return cls._url_override
-        
-        env_url = os.environ.get('SPAIR_URL')
-        if env_url:
-            return env_url
-        
-        return _URL
 
     def _info(self):
         if self.config.name == "pairs":
@@ -141,25 +121,43 @@ class SPair71k(datasets.GeneratorBasedBuilder):
         )
 
     def _split_generators(self, dl_manager):
-        # make sure to download the data even when streaming
-        if not isinstance(dl_manager, datasets.DownloadManager):
-            dl_manager = datasets.DownloadManager(dl_manager._dataset_name)
+        # Determine local data directory
+        # This will create/check a 'data' folder in the current working directory
+        local_data_dir = Path("data").resolve()
+        dataset_dir = local_data_dir / "SPair-71k"
         
-        # Get the URL (checking for overrides)
-        data_url = self.get_data_url()
-        
-        # Check if it's a local file path
-        if data_url.startswith('file://'):
-            # Remove file:// prefix
-            local_path = data_url[7:]
-        elif os.path.isabs(data_url) or os.path.exists(data_url):
-            # It's a local absolute or relative path
-            local_path = data_url
+        # Check if dataset needs to be downloaded
+        if not dataset_dir.exists():
+            print(f"Dataset not found at {dataset_dir}. Downloading...")
+            local_data_dir.mkdir(parents=True, exist_ok=True)
+            tar_path = local_data_dir / "SPair-71k.tar.gz"
+            
+            # Download file
+            try:
+                import requests
+                from tqdm import tqdm
+                response = requests.get(_URL, stream=True)
+                total_size = int(response.headers.get('content-length', 0))
+                block_size = 1024
+                with open(tar_path, 'wb') as f, tqdm(total=total_size, unit='iB', unit_scale=True, desc="Downloading") as bar:
+                    for data in response.iter_content(block_size):
+                        bar.update(len(data))
+                        f.write(data)
+            except ImportError:
+                print("Requests/tqdm not found, using urllib for download...")
+                urllib.request.urlretrieve(_URL, tar_path)
+            
+            print("Extracting dataset...")
+            with tarfile.open(tar_path, "r:gz") as tar:
+                tar.extractall(path=local_data_dir)
+            
+            # Remove tar file to save space
+            os.remove(tar_path)
+            print("Download and extraction complete.")
         else:
-            # It's a remote URL, download and extract
-            local_path = dl_manager.download_and_extract(data_url)
-        
-        data_path = local_path
+            print(f"Found existing dataset at {dataset_dir}")
+
+        data_path = str(dataset_dir)
 
         if self.config.name == "pairs":
             return [
@@ -186,7 +184,6 @@ class SPair71k(datasets.GeneratorBasedBuilder):
                 ),
             ]
         elif self.config.name == "data":
-            # the data is not split
             return [
                 SplitGenerator(
                     name=Split.TRAIN,
@@ -200,20 +197,44 @@ class SPair71k(datasets.GeneratorBasedBuilder):
             raise ValueError(f"Unknown configuration name {self.config.name}")
 
     def _generate_examples(self, path, split):
-        path = Path(path) / 'SPair-71k'
-        image_indices = {f'{cat}/{name}': i for i, (name, cat) in enumerate(sorted((img_name.name[:-4], folder.name) for folder in (path / 'JPEGImages').glob('*') for img_name in folder.glob('*.jpg')))}
+        path = Path(path)
+        
+        # Pre-scan for images to create the index
+        image_indices = {}
+        jpeg_path = path / 'JPEGImages'
+        if jpeg_path.exists():
+            # Build index: {'category/filename': index}
+            # List all category folders
+            cat_folders = sorted([f for f in jpeg_path.glob('*') if f.is_dir()])
+            idx_counter = 0
+            for folder in cat_folders:
+                cat_name = folder.name
+                # List all images in category
+                images = sorted(folder.glob('*.jpg'))
+                for img_path in images:
+                    img_name = img_path.name[:-4] # remove .jpg
+                    key = f'{cat_name}/{img_name}'
+                    image_indices[key] = idx_counter
+                    idx_counter += 1
+        
         if self.config.name == 'pairs':
-            for pair_file in (path / 'PairAnnotation' / split).glob('*.json'):
+            split_folder = path / 'PairAnnotation' / split
+            if not split_folder.exists():
+                print(f"Warning: Split folder {split_folder} does not exist.")
+                return
+
+            for pair_file in split_folder.glob('*.json'):
                 with open(pair_file, 'r') as f:
                     data = json.load(f)
                 category = data['category']
                 src_name = f'{category}/{data["src_imname"][:-4]}'
                 trg_name = f'{category}/{data["trg_imname"][:-4]}'
+                
                 yield data["pair_id"], {
                     "pair_id": data["pair_id"],
                     "src_img": {"path": str(path / 'JPEGImages' / f'{src_name}.jpg'), "bytes": None},
                     "src_segmentation": {"path": str(path / 'Segmentation' / f'{src_name}.png'), "bytes": None},
-                    "src_data_index": image_indices[src_name],
+                    "src_data_index": image_indices.get(src_name, 0),
                     "src_name": src_name,
                     "src_imsize": data["src_imsize"],
                     "src_bndbox": data["src_bndbox"],
@@ -221,7 +242,7 @@ class SPair71k(datasets.GeneratorBasedBuilder):
                     "src_kps": data["src_kps"],
                     "trg_img": {"path": str(path / 'JPEGImages' / f'{trg_name}.jpg'), "bytes": None},
                     "trg_segmentation": {"path": str(path / 'Segmentation' / f'{trg_name}.png'), "bytes": None},
-                    "trg_data_index": image_indices[trg_name],
+                    "trg_data_index": image_indices.get(trg_name, 0),
                     "trg_name": trg_name,
                     "trg_imsize": data["trg_imsize"],
                     "trg_bndbox": data["trg_bndbox"],
@@ -237,7 +258,11 @@ class SPair71k(datasets.GeneratorBasedBuilder):
                 }
         elif self.config.name == 'data':
             for img_name, i in image_indices.items():
-                annotation = json.loads((path / 'ImageAnnotation' / f'{img_name}.json').read_text())
+                anno_file = path / 'ImageAnnotation' / f'{img_name}.json'
+                if not anno_file.exists():
+                    continue
+                    
+                annotation = json.loads(anno_file.read_text())
                 yield i, {
                     "img": {"path": str(path / 'JPEGImages' / f'{img_name}.jpg'), "bytes": None},
                     "name": img_name,
