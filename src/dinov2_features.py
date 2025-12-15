@@ -71,6 +71,30 @@ class DINOv2FeatureExtractor:
             
             return feature_map
 
+    def map_keypoints(self, keypoints, inverse=False):
+        """
+        Maps keypoints between image pixel coordinates and feature map coordinates.
+        
+        Args:
+            keypoints (torch.Tensor or numpy.ndarray): Shape (N, 2) containing (x, y) coordinates.
+            inverse (bool): If False (default), maps Image Pixels -> Feature Grid (divides by patch_size).
+                            If True, maps Feature Grid -> Image Pixels (multiplies by patch_size).
+        
+        Returns:
+            torch.Tensor: Mapped keypoints.
+        """
+        if not isinstance(keypoints, torch.Tensor):
+            keypoints = torch.tensor(keypoints, device=self.device)
+            
+        if inverse:
+            # Feature Grid -> Image Pixels
+            # We map the center of the patch back to the pixel space
+            return keypoints * self.patch_size + (self.patch_size / 2)
+        else:
+            # Image Pixels -> Feature Grid
+            return keypoints / self.patch_size
+
+
 # --- Usage Example ---
 if __name__ == "__main__":
     # 1. Initialize

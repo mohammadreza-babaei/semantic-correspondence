@@ -18,6 +18,23 @@ MODEL_CONFIGS = {
         norm_std=[0.229, 0.224, 0.225],
         needs_prompt=False
     ),
+
+    # ADD THIS FOR DINOv3
+    'dinov3': ModelConfig(
+        name='dinov3',
+        size=848, # 848 / 16 = 53 patches. (Closest valid size to 840)
+        norm_mean=[0.485, 0.456, 0.406],
+        norm_std=[0.229, 0.224, 0.225],
+        needs_prompt=False
+    ),
+
+    'sam': ModelConfig(
+    name='sam',
+    size=1024,  # Standard for SAM
+    norm_mean=[0.485, 0.456, 0.406],
+    norm_std=[0.229, 0.224, 0.225],
+    needs_prompt=False
+    ),
     
     # Paper 2 & 3 (Telling Left from Right): Uses 960x960 for SD features
     'sd_paper3': ModelConfig(
