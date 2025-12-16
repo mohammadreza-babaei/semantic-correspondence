@@ -94,6 +94,28 @@ class DINOv2FeatureExtractor:
             # Image Pixels -> Feature Grid
             return keypoints / self.patch_size
 
+    def fine_tune(self, checkpoint_path='checkpoints/dinov2_features/dinov2_vits14_features.pt'):
+        """
+        Loads pretrained features from a checkpoint file.
+        
+        Args:
+            checkpoint_path (str): Path to the checkpoint file containing pretrained features.
+        
+        Returns:
+            dict: Dictionary containing the loaded features with image identifiers as keys.
+        """
+        print(f"Loading features from {checkpoint_path}...")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        if isinstance(checkpoint, dict):
+            print(f"Loaded {len(checkpoint) - 1 if 'device' in checkpoint else len(checkpoint)} feature sets from checkpoint.")
+            # Remove 'device' key if present since it's metadata
+            if 'device' in checkpoint:
+                del checkpoint['device']
+            return checkpoint
+        else:
+            raise ValueError("Checkpoint format not recognized. Expected a dictionary.")
+
 
 # --- Usage Example ---
 if __name__ == "__main__":
