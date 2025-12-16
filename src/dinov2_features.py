@@ -9,6 +9,8 @@ import numpy as np
 from pathlib import Path
 import os
 
+from src.loss_and_model import cal_clip_loss
+
 class DINOv2FeatureExtractor:
     def __init__(self, model_name='dinov2_vits14', device='cuda' if torch.cuda.is_available() else 'cpu'):
         """
@@ -123,55 +125,6 @@ class DINOv2FeatureExtractor:
             raise ValueError("Checkpoint format not recognized. Expected a dictionary.")
 
 
-def correspondence_loss(feat1, feat2, kps1, kps2, patch_size=14, temperature=0.07):
-    """
-    Compute correspondence loss between two feature maps using keypoint annotations.
-    
-    Args:
-        feat1, feat2: Feature maps of shape (B, C, H, W) - already L2 normalized
-        kps1, kps2: Keypoints of shape (N, 2) or (N, 3) with visibility
-        patch_size: Patch size used by DINOv2
-        temperature: Temperature for softmax
-    
-    Returns:
-        loss: Contrastive correspondence loss
-    """
-    B, C, H, W = feat1.shape
-    device = feat1.device
-    
-    # Handle visibility if present
-    if kps1.shape[-1] == 3:
-        vis = (kps1[:, 2] > 0) & (kps2[:, 2] > 0)
-        kps1 = kps1[vis, :2]
-        kps2 = kps2[vis, :2]
-    
-    if len(kps1) == 0:
-        return torch.tensor(0.0, device=device, requires_grad=True)
-    
-    # Convert pixel coordinates to feature grid coordinates
-    kps1_grid = (kps1 / patch_size).long().clamp(0, H - 1)
-    kps2_grid = (kps2 / patch_size).long().clamp(0, W - 1)
-    
-    # Extract features at keypoint locations
-    # feat1/feat2: (B, C, H, W) -> gather at keypoint positions
-    feat1_flat = feat1[0].permute(1, 2, 0)  # (H, W, C)
-    feat2_flat = feat2[0].permute(1, 2, 0)  # (H, W, C)
-    
-    kps1_features = feat1_flat[kps1_grid[:, 1], kps1_grid[:, 0]]  # (N, C)
-    kps2_features = feat2_flat[kps2_grid[:, 1], kps2_grid[:, 0]]  # (N, C)
-    
-    # Compute similarity matrix
-    similarity = torch.matmul(kps1_features, kps2_features.T) / temperature  # (N, N)
-    
-    # Labels: each keypoint in img1 should match the same index in img2
-    labels = torch.arange(len(kps1), device=device)
-    
-    # Cross-entropy loss (both directions)
-    loss_1_to_2 = F.cross_entropy(similarity, labels)
-    loss_2_to_1 = F.cross_entropy(similarity.T, labels)
-    
-    return (loss_1_to_2 + loss_2_to_1) / 2
-
 
 class DINOv2FineTuner:
     """Fine-tuning trainer for DINOv2-based semantic correspondence by unfreezing last layers."""
@@ -217,15 +170,18 @@ class DINOv2FineTuner:
         total_params = sum(p.numel() for p in self.backbone.parameters())
         print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
         
-        # Learnable temperature for contrastive loss
-        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07)).to(self.device)
+        # Learnable temperature parameters for contrastive loss
+        # Create parameters directly on device to keep them as leaf tensors
+        self.logit_scale = nn.Parameter(torch.ones([], device=self.device) * np.log(1 / 0.07))
+        self.self_logit_scale = nn.Parameter(torch.ones([], device=self.device) * np.log(1 / 0.07))
         
-        # Optimizer for unfrozen backbone parameters + temperature
-        trainable_backbone_params = [p for p in self.backbone.parameters() if p.requires_grad]
+        # Optimizer for unfrozen backbone parameters + temperature parameters
+        # Filter to ensure we only get leaf tensors that require grad
+        trainable_backbone_params = [p for p in self.backbone.parameters() if p.requires_grad and p.is_leaf]
         self.optimizer = torch.optim.AdamW(
             [
                 {'params': trainable_backbone_params, 'lr': learning_rate},
-                {'params': [self.logit_scale], 'lr': learning_rate * 10}
+                {'params': [self.logit_scale, self.self_logit_scale], 'lr': learning_rate * 10}
             ],
             weight_decay=0.01
         )
@@ -303,16 +259,41 @@ class DINOv2FineTuner:
         
         # Handle PIL images vs tensors
         if isinstance(src_img, Image.Image):
+            # Get original sizes
+            src_orig_w, src_orig_h = src_img.size
+            trg_orig_w, trg_orig_h = trg_img.size
+            
+            # Preprocess images
             src_tensor = self.preprocess_image(src_img)
             trg_tensor = self.preprocess_image(trg_img)
+            
+            # Get new sizes
+            src_new_h, src_new_w = src_tensor.shape[2], src_tensor.shape[3]
+            trg_new_h, trg_new_w = trg_tensor.shape[2], trg_tensor.shape[3]
+            
+            # Scale keypoints to match resized images
+            if not isinstance(src_kps, torch.Tensor):
+                src_kps = torch.tensor(src_kps, dtype=torch.float32)
+                trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
+            
+            # Scale keypoints (x, y, visibility)
+            if src_kps.shape[-1] >= 2:
+                src_kps = src_kps.clone()
+                src_kps[:, 0] = src_kps[:, 0] * (src_new_w / src_orig_w)
+                src_kps[:, 1] = src_kps[:, 1] * (src_new_h / src_orig_h)
+            
+            if trg_kps.shape[-1] >= 2:
+                trg_kps = trg_kps.clone()
+                trg_kps[:, 0] = trg_kps[:, 0] * (trg_new_w / trg_orig_w)
+                trg_kps[:, 1] = trg_kps[:, 1] * (trg_new_h / trg_orig_h)
         else:
             src_tensor = src_img.to(self.device)
             trg_tensor = trg_img.to(self.device)
-        
-        # Ensure keypoints are tensors
-        if not isinstance(src_kps, torch.Tensor):
-            src_kps = torch.tensor(src_kps, dtype=torch.float32)
-            trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
+            
+            # Ensure keypoints are tensors
+            if not isinstance(src_kps, torch.Tensor):
+                src_kps = torch.tensor(src_kps, dtype=torch.float32)
+                trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
         
         src_kps = src_kps.to(self.device)
         trg_kps = trg_kps.to(self.device)
@@ -320,10 +301,47 @@ class DINOv2FineTuner:
         # Forward pass
         feat1, feat2 = self.forward(src_tensor, trg_tensor)
         
-        # Compute loss
-        temperature = self.logit_scale.exp().clamp(max=100)
-        loss = correspondence_loss(feat1, feat2, src_kps, trg_kps, 
-                                   self.patch_size, temperature=1/temperature)
+        # Extract features at keypoint locations
+        # Note: feat1 and feat2 may have different shapes if images have different sizes
+        B1, C1, H1, W1 = feat1.shape
+        B2, C2, H2, W2 = feat2.shape
+        
+        # Handle visibility if present
+        if src_kps.shape[-1] == 3:
+            vis = (src_kps[:, 2] > 0) & (trg_kps[:, 2] > 0)
+            src_kps_vis = src_kps[vis, :2]
+            trg_kps_vis = trg_kps[vis, :2]
+        else:
+            src_kps_vis = src_kps
+            trg_kps_vis = trg_kps
+        
+        if len(src_kps_vis) == 0:
+            return 0.0
+        
+        # Convert pixel coordinates to feature grid coordinates
+        src_kps_grid = (src_kps_vis / self.patch_size).floor().long()
+        trg_kps_grid = (trg_kps_vis / self.patch_size).floor().long()
+        
+        # Clamp coordinates to valid feature map range [0, dim-1] using correct dimensions
+        src_kps_grid[:, 0] = src_kps_grid[:, 0].clamp(0, W1 - 1)
+        src_kps_grid[:, 1] = src_kps_grid[:, 1].clamp(0, H1 - 1)
+        trg_kps_grid[:, 0] = trg_kps_grid[:, 0].clamp(0, W2 - 1)
+        trg_kps_grid[:, 1] = trg_kps_grid[:, 1].clamp(0, H2 - 1)
+        
+        # Extract features at keypoint locations
+        feat1_flat = feat1[0].permute(1, 2, 0)  # (H, W, C)
+        feat2_flat = feat2[0].permute(1, 2, 0)  # (H, W, C)
+        
+        src_kps_features = feat1_flat[src_kps_grid[:, 1], src_kps_grid[:, 0]]  # (N, C)
+        trg_kps_features = feat2_flat[trg_kps_grid[:, 1], trg_kps_grid[:, 0]]  # (N, C)
+        
+        # Compute loss using cal_clip_loss
+        loss = cal_clip_loss(
+            src_kps_features,
+            trg_kps_features,
+            self.logit_scale.exp().clamp(max=100),
+            self_logit_scale=self.self_logit_scale.exp().clamp(max=100)
+        )
         
         # Backward pass
         self.optimizer.zero_grad()
@@ -360,9 +378,47 @@ class DINOv2FineTuner:
         feat1 = self.extract_features(src_tensor, requires_grad=False)
         feat2 = self.extract_features(trg_tensor, requires_grad=False)
         
-        temperature = self.logit_scale.exp().clamp(max=100)
-        loss = correspondence_loss(feat1, feat2, src_kps, trg_kps,
-                                   self.patch_size, temperature=1/temperature)
+        # Extract features at keypoint locations
+        # Note: feat1 and feat2 may have different shapes if images have different sizes
+        B1, C1, H1, W1 = feat1.shape
+        B2, C2, H2, W2 = feat2.shape
+        
+        # Handle visibility if present
+        if src_kps.shape[-1] == 3:
+            vis = (src_kps[:, 2] > 0) & (trg_kps[:, 2] > 0)
+            src_kps_vis = src_kps[vis, :2]
+            trg_kps_vis = trg_kps[vis, :2]
+        else:
+            src_kps_vis = src_kps
+            trg_kps_vis = trg_kps
+        
+        if len(src_kps_vis) == 0:
+            return 0.0
+        
+        # Convert pixel coordinates to feature grid coordinates
+        src_kps_grid = (src_kps_vis / self.patch_size).floor().long()
+        trg_kps_grid = (trg_kps_vis / self.patch_size).floor().long()
+        
+        # Clamp coordinates to valid feature map range [0, dim-1] using correct dimensions
+        src_kps_grid[:, 0] = src_kps_grid[:, 0].clamp(0, W1 - 1)
+        src_kps_grid[:, 1] = src_kps_grid[:, 1].clamp(0, H1 - 1)
+        trg_kps_grid[:, 0] = trg_kps_grid[:, 0].clamp(0, W2 - 1)
+        trg_kps_grid[:, 1] = trg_kps_grid[:, 1].clamp(0, H2 - 1)
+        
+        # Extract features at keypoint locations
+        feat1_flat = feat1[0].permute(1, 2, 0)  # (H, W, C)
+        feat2_flat = feat2[0].permute(1, 2, 0)  # (H, W, C)
+        
+        src_kps_features = feat1_flat[src_kps_grid[:, 1], src_kps_grid[:, 0]]  # (N, C)
+        trg_kps_features = feat2_flat[trg_kps_grid[:, 1], trg_kps_grid[:, 0]]  # (N, C)
+        
+        # Compute loss using cal_clip_loss
+        loss = cal_clip_loss(
+            src_kps_features,
+            trg_kps_features,
+            self.logit_scale.exp().clamp(max=100),
+            self_logit_scale=self.self_logit_scale.exp().clamp(max=100)
+        )
         
         return loss.item()
     
@@ -374,7 +430,8 @@ class DINOv2FineTuner:
         batch_size=1,  # Usually 1 for correspondence due to varying keypoint counts
         log_interval=10,
         save_path='checkpoints/finetuned_dinov2',
-        plot_every_epoch=True
+        plot_every_epoch=True,
+        max_iters_per_epoch=None
     ):
         """
         Main training loop with loss visualization.
@@ -387,6 +444,7 @@ class DINOv2FineTuner:
             log_interval: How often to log training progress
             save_path: Path to save checkpoints
             plot_every_epoch: Whether to update plots after each epoch
+            max_iters_per_epoch: Maximum iterations per epoch (None for full epoch)
         
         Returns:
             history: Dictionary containing training history
@@ -439,7 +497,13 @@ class DINOv2FineTuner:
             self.backbone.train()
             epoch_losses = []
             
+            # Determine iteration limit for this epoch
+            max_iters = len(train_loader) if max_iters_per_epoch is None else min(max_iters_per_epoch, len(train_loader))
+            
             for batch_idx, batch in enumerate(train_loader):
+                if batch_idx >= max_iters:
+                    break
+                    
                 loss = self.train_step(batch)
                 epoch_losses.append(loss)
                 self.history['epoch_train_losses'].append(loss)
@@ -453,7 +517,7 @@ class DINOv2FineTuner:
                 if (batch_idx + 1) % log_interval == 0:
                     avg_loss = np.mean(epoch_losses[-log_interval:])
                     print(f"Epoch [{epoch+1}/{epochs}] "
-                          f"Batch [{batch_idx+1}/{len(train_loader)}] "
+                          f"Batch [{batch_idx+1}/{max_iters}] "
                           f"Loss: {avg_loss:.4f} "
                           f"LR: {self.optimizer.param_groups[0]['lr']:.2e}")
             
@@ -575,6 +639,7 @@ class DINOv2FineTuner:
         checkpoint = {
             'backbone_state_dict': self.backbone.state_dict(),
             'logit_scale': self.logit_scale,
+            'self_logit_scale': self.self_logit_scale,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'history': self.history,
             'embed_dim': self.embed_dim,
@@ -590,6 +655,8 @@ class DINOv2FineTuner:
         checkpoint = torch.load(path, map_location=self.device)
         self.backbone.load_state_dict(checkpoint['backbone_state_dict'])
         self.logit_scale = checkpoint['logit_scale']
+        self.self_logit_scale = checkpoint.get('self_logit_scale', 
+                                                nn.Parameter(torch.ones([], device=self.device) * np.log(1 / 0.07)))
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.history = checkpoint['history']
         if 'scheduler_state_dict' in checkpoint and self.scheduler is not None:
