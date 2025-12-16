@@ -615,7 +615,7 @@ class DINOv2FineTuner:
                 smoothed = np.convolve(batch_losses, 
                                        np.ones(window_size)/window_size, 
                                        mode='valid')
-                x_smooth = range(window_size // 2, len(batch_losses) - window_size // 2)
+                x_smooth = range(window_size // 2, window_size // 2 + len(smoothed))
                 axes[1].plot(x_smooth, smoothed, 'g-', 
                              label=f'Smoothed (window={window_size})', 
                              linewidth=2, alpha=0.9)
