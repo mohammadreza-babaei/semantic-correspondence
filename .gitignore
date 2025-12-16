@@ -176,3 +176,7 @@ cython_debug/
 
 # Ignore the entire data folder (raw images, jsons, and extracted tar files)
 data/
+
+checkpoints/
+
+.vscode/
