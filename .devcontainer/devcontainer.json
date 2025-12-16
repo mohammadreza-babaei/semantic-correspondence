@@ -1,18 +1,25 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/python
 {
-	"name": "Python 3",
+	"name": "Python 3 with CUDA 13.0.2",
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-	"image": "mcr.microsoft.com/devcontainers/python:2-3.14-trixie"
+	"image": "docker.io/nvidia/cuda:13.0.2-base-ubuntu24.04",
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
+	"features": {
+		"ghcr.io/devcontainers/features/python:1": {
+			"version": "3.14"
+		}
+	},
 
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
+	// "hostRequirements": {
+    // 	"gpu": "optional" 
+  	// },
 
-	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "pip3 install --user -r requirements.txt",
+	"runArgs": [
+		"--device",
+		"nvidia.com/gpu=all"
+	]
 
 	// Configure tool-specific properties.
 	// "customizations": {},
