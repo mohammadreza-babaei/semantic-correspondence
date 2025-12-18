@@ -107,19 +107,3 @@ class DINOv3FeatureExtractor:
         else:
             # Image Pixels -> Feature Grid
             return keypoints / self.patch_size
-
-# --- Usage Example ---
-if __name__ == "__main__":
-    # 1. Initialize
-    # Note: DINOv3 usually defaults to patch size 16 (e.g. dinov3_vits16)
-    extractor = DINOv3FeatureExtractor(model_name='dinov3_vits16')
-
-    # 2. Create Dummy Input (Standard DINOv3 size often divisible by 16)
-    dummy_input = torch.randn(1, 3, 848, 848).to(extractor.device) # 848 is divisible by 16
-
-    # 3. Extract Features
-    features = extractor.extract_features(dummy_input)
-    
-    print(f"Input shape: {dummy_input.shape}")
-    print(f"Output Feature Map Shape: {features.shape}")
-    # Expected H, W = 848/16 = 53

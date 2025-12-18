@@ -82,18 +82,3 @@ class SAMFeatureExtractor:
         else:
             # Image Pixels -> Feature Grid
             return keypoints / self.patch_size
-
-# --- Usage Example ---
-if __name__ == "__main__":
-    # 1. Initialize
-    # Ensure you have `pip install transformers`
-    extractor = SAMFeatureExtractor(model_name='facebook/sam-vit-base')
-
-    # 2. Dummy Input (Standard SAM size 1024)
-    dummy_input = torch.randn(1, 3, 1024, 1024).to(extractor.device)
-
-    # 3. Extract
-    features = extractor.extract_features(dummy_input)
-    
-    print(f"Output Feature Map Shape: {features.shape}")
-    # Expected: (1, 256, 64, 64)
