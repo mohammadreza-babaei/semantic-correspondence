@@ -425,6 +425,7 @@ class DINOv2FineTuner:
         
         # Backward pass
         self.optimizer.zero_grad()
+        loss.requires_grad = True
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.backbone.parameters(), max_norm=1.0)
         self.optimizer.step()
