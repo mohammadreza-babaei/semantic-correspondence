@@ -33,6 +33,21 @@ class DINOv2FeatureExtractor:
         Loads and preprocesses an image. Ensures dimensions are multiples of patch_size.
         """
         img = Image.open(image_path).convert('RGB')
+        return self.preprocess_image_pil(img, target_size)
+    
+    def preprocess_image_pil(self, img, target_size=None):
+        """
+        Preprocesses a PIL image. Ensures dimensions are multiples of patch_size.
+        
+        Args:
+            img: PIL Image
+            target_size: Optional tuple (width, height) for target size
+            
+        Returns:
+            torch.Tensor: Preprocessed image tensor (1, C, H, W)
+        """
+        if isinstance(img, np.ndarray):
+            img = Image.fromarray(img)
         
         # Resize logic: If target_size is provided, use it. 
         # Otherwise, ensure dimensions are divisible by patch_size for ViT.
@@ -47,10 +62,14 @@ class DINOv2FeatureExtractor:
         ])
         
         return resize_transform(img).unsqueeze(0).to(self.device)
+    
+    def get_embed_dim(self):
+        """Get the embedding dimension of the model."""
+        return self.model.embed_dim
 
     def extract_features(self, image_tensor):
         """
-        Extracts dense features from the image.
+        Extracts dense features from the image
         
         Returns:
             torch.Tensor: Feature map of shape (1, C, H_patch, W_patch)
@@ -127,7 +146,11 @@ class DINOv2FeatureExtractor:
 
 
 class DINOv2FineTuner:
-    """Fine-tuning trainer for DINOv2-based semantic correspondence by unfreezing last layers."""
+    """Fine-tuning trainer for DINOv2-based semantic correspondence by unfreezing last layers.
+    
+    Uses DINOv2FeatureExtractor for feature extraction. Can optionally use pre-extracted
+    features for the frozen layers and only compute the unfrozen layers during training.
+    """
     
     def __init__(
         self,
@@ -135,15 +158,36 @@ class DINOv2FineTuner:
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
         learning_rate=1e-5,
+        feature_extractor=None,
     ):
+        """
+        Initialize the fine-tuner.
+        
+        Args:
+            model_name: DINOv2 model variant to use
+            device: Device for computation
+            num_unfrozen_blocks: Number of transformer blocks to unfreeze from the end
+            learning_rate: Learning rate for training
+            feature_extractor: Optional pre-initialized DINOv2FeatureExtractor. If None,
+                               a new one will be created.
+        """
         self.device = device
-        self.patch_size = 14
+        self.model_name = model_name
         
-        print(f"Loading {model_name} on {self.device}...")
-        self.backbone = torch.hub.load('facebookresearch/dinov2', model_name).to(self.device)
+        # Use provided feature extractor or create a new one
+        if feature_extractor is not None:
+            self.feature_extractor = feature_extractor
+            self.backbone = feature_extractor.model
+            print(f"Using provided DINOv2FeatureExtractor")
+        else:
+            self.feature_extractor = DINOv2FeatureExtractor(model_name=model_name, device=device)
+            self.backbone = self.feature_extractor.model
         
-        # Get embedding dimension from backbone
-        self.embed_dim = self.backbone.embed_dim
+        self.patch_size = self.feature_extractor.patch_size
+        self.embed_dim = self.feature_extractor.get_embed_dim()
+        
+        # Store number of unfrozen blocks for feature caching logic
+        self.num_unfrozen_blocks = num_unfrozen_blocks
         
         # Freeze all parameters first
         for param in self.backbone.parameters():
@@ -197,112 +241,148 @@ class DINOv2FineTuner:
             'learning_rates': []
         }
         
-        # Image preprocessing
-        self.transform = T.Compose([
-            T.ToTensor(),
-            T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ])
+        # Pre-extracted features cache (populated by extract_all_features)
+        self.features_cache = {}
     
-    def preprocess_image(self, image):
-        """Preprocess image ensuring dimensions are multiples of patch_size."""
-        if isinstance(image, str):
-            image = Image.open(image).convert('RGB')
-        elif isinstance(image, np.ndarray):
-            image = Image.fromarray(image)
+    def extract_all_features(self, dataset, show_progress=True):
+        """
+        Pre-extract features for all images across all dataset splits.
         
-        w, h = image.size
-        new_w = (w // self.patch_size) * self.patch_size
-        new_h = (h // self.patch_size) * self.patch_size
+        Features are stored in self.features_cache indexed by image name and saved to disk
+        in a single file for reuse across runs.
         
-        if new_w != w or new_h != h:
-            image = image.resize((new_w, new_h), Image.BILINEAR)
+        Args:
+            dataset: SPair71kPairs dataset (any split, will extract from all JPEGImages)
+            show_progress: Whether to show progress bar
+            
+        Returns:
+            dict: Dictionary mapping image names to feature info
+        """
+        from tqdm import tqdm
         
-        return self.transform(image).unsqueeze(0).to(self.device)
+        # Create cache directory and file path
+        cache_dir = Path('checkpoints') / 'feature_cache'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{self.model_name}_features.pt"
+        
+        # Try to load all features from disk cache first
+        if cache_file.exists():
+            try:
+                print(f"Loading features from {cache_file}...")
+                self.features_cache = torch.load(cache_file, map_location='cpu')
+                print(f"Loaded {len(self.features_cache)} cached features from disk")
+                return self.features_cache
+            except Exception as e:
+                print(f"Warning: Failed to load cache file: {e}")
+                print("Will re-extract features...")
+                self.features_cache = {}
+        
+        # Collect ALL unique images from the JPEGImages directory (all splits)
+        print("Scanning all images in JPEGImages directory...")
+        jpeg_dir = dataset.root / 'JPEGImages'
+        unique_images = set()
+        
+        # Walk through all category subdirectories
+        for category_dir in jpeg_dir.iterdir():
+            if category_dir.is_dir():
+                category = category_dir.name
+                for img_file in category_dir.glob('*.jpg'):
+                    img_name = f"{category}/{img_file.stem}"
+                    unique_images.add(img_name)
+        
+        print(f"Found {len(unique_images)} unique images across all splits")
+        
+        # Extract features for each unique image
+        iterator = tqdm(unique_images, desc="Extracting features") if show_progress else unique_images
+        
+        for img_name in iterator:
+            if img_name in self.features_cache:
+                continue
+            
+            # Get image path
+            img_path = dataset.root / 'JPEGImages' / f'{img_name}.jpg'
+            
+            # Load and preprocess image
+            img = Image.open(img_path).convert('RGB')
+            orig_w, orig_h = img.size
+            
+            img_tensor = self.feature_extractor.preprocess_image_pil(img)
+            new_h, new_w = img_tensor.shape[2], img_tensor.shape[3]
+            
+            # Extract features using the feature extractor
+            features = self.feature_extractor.extract_features(img_tensor)
+            
+            # Store features (move to CPU to save GPU memory)
+            self.features_cache[img_name] = {
+                'features': features.cpu(),
+                'shape': features.shape,
+                'orig_size': (orig_w, orig_h),
+                'tensor_size': (new_w, new_h),
+            }
+        
+        # Save all features to disk in a single file
+        try:
+            print(f"Saving {len(self.features_cache)} features to {cache_file}...")
+            torch.save(self.features_cache, cache_file)
+            print("Features saved successfully")
+        except Exception as e:
+            print(f"Warning: Failed to save cache file: {e}")
+        
+        print(f"Cached features for {len(self.features_cache)} images")
+        return self.features_cache
     
-    def extract_features(self, image_tensor, requires_grad=False):
-        """Extract features from backbone."""
-        if requires_grad:
-            # Training mode - allow gradients through unfrozen layers
-            features_dict = self.backbone.forward_features(image_tensor)
-            patch_tokens = features_dict['x_norm_patchtokens']
-        else:
-            with torch.no_grad():
-                features_dict = self.backbone.forward_features(image_tensor)
-                patch_tokens = features_dict['x_norm_patchtokens']
-        
-        B, N, C = patch_tokens.shape
-        H_img, W_img = image_tensor.shape[2], image_tensor.shape[3]
-        H_patch = H_img // self.patch_size
-        W_patch = W_img // self.patch_size
-        
-        feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H_patch, W_patch)
-        # L2 normalize features
-        feature_map = F.normalize(feature_map, dim=1)
-        return feature_map
-    
-    def forward(self, img1_tensor, img2_tensor):
-        """Forward pass through backbone."""
-        feat1 = self.extract_features(img1_tensor, requires_grad=True)
-        feat2 = self.extract_features(img2_tensor, requires_grad=True)
-        
-        return feat1, feat2
+    def clear_features_cache(self):
+        """Clear the features cache to free memory."""
+        self.features_cache = {}
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
     def train_step(self, batch):
-        """Single training step."""
+        """Single training step using cached features.
+        
+        Args:
+            batch: Dictionary containing 'src_name', 'trg_name', 'src_kps', 'trg_kps'
+        """
         self.backbone.train()
         
-        # Extract data from batch
-        src_img = batch['src_img']
-        trg_img = batch['trg_img']
+        # Get image names and keypoints
+        src_name = batch['src_name']
+        trg_name = batch['trg_name']
         src_kps = batch['src_kps']
         trg_kps = batch['trg_kps']
         
-        # Handle PIL images vs tensors
-        if isinstance(src_img, Image.Image):
-            # Get original sizes
-            src_orig_w, src_orig_h = src_img.size
-            trg_orig_w, trg_orig_h = trg_img.size
-            
-            # Preprocess images
-            src_tensor = self.preprocess_image(src_img)
-            trg_tensor = self.preprocess_image(trg_img)
-            
-            # Get new sizes
-            src_new_h, src_new_w = src_tensor.shape[2], src_tensor.shape[3]
-            trg_new_h, trg_new_w = trg_tensor.shape[2], trg_tensor.shape[3]
-            
-            # Scale keypoints to match resized images
-            if not isinstance(src_kps, torch.Tensor):
-                src_kps = torch.tensor(src_kps, dtype=torch.float32)
-                trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
-            
-            # Scale keypoints (x, y, visibility)
-            if src_kps.shape[-1] >= 2:
-                src_kps = src_kps.clone()
-                src_kps[:, 0] = src_kps[:, 0] * (src_new_w / src_orig_w)
-                src_kps[:, 1] = src_kps[:, 1] * (src_new_h / src_orig_h)
-            
-            if trg_kps.shape[-1] >= 2:
-                trg_kps = trg_kps.clone()
-                trg_kps[:, 0] = trg_kps[:, 0] * (trg_new_w / trg_orig_w)
-                trg_kps[:, 1] = trg_kps[:, 1] * (trg_new_h / trg_orig_h)
-        else:
-            src_tensor = src_img.to(self.device)
-            trg_tensor = trg_img.to(self.device)
-            
-            # Ensure keypoints are tensors
-            if not isinstance(src_kps, torch.Tensor):
-                src_kps = torch.tensor(src_kps, dtype=torch.float32)
-                trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
+        # Get cached features (required)
+        if src_name not in self.features_cache or trg_name not in self.features_cache:
+            raise RuntimeError(f"Features not cached for {src_name} or {trg_name}. "
+                             "Call extract_all_features() before training.")
+        
+        feat1 = self.features_cache[src_name]['features'].to(self.device)
+        feat2 = self.features_cache[trg_name]['features'].to(self.device)
+        src_new_w, src_new_h = self.features_cache[src_name]['tensor_size']
+        trg_new_w, trg_new_h = self.features_cache[trg_name]['tensor_size']
+        src_orig_w, src_orig_h = self.features_cache[src_name]['orig_size']
+        trg_orig_w, trg_orig_h = self.features_cache[trg_name]['orig_size']
+        
+        # Convert keypoints to tensors
+        if not isinstance(src_kps, torch.Tensor):
+            src_kps = torch.tensor(src_kps, dtype=torch.float32)
+            trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
+        
+        # Scale keypoints to match resized images
+        if src_kps.shape[-1] >= 2:
+            src_kps = src_kps.clone()
+            src_kps[:, 0] = src_kps[:, 0] * (src_new_w / src_orig_w)
+            src_kps[:, 1] = src_kps[:, 1] * (src_new_h / src_orig_h)
+        
+        if trg_kps.shape[-1] >= 2:
+            trg_kps = trg_kps.clone()
+            trg_kps[:, 0] = trg_kps[:, 0] * (trg_new_w / trg_orig_w)
+            trg_kps[:, 1] = trg_kps[:, 1] * (trg_new_h / trg_orig_h)
         
         src_kps = src_kps.to(self.device)
         trg_kps = trg_kps.to(self.device)
         
-        # Forward pass
-        feat1, feat2 = self.forward(src_tensor, trg_tensor)
-        
-        # Extract features at keypoint locations
-        # Note: feat1 and feat2 may have different shapes if images have different sizes
+        # Get feature map dimensions
         B1, C1, H1, W1 = feat1.shape
         B2, C2, H2, W2 = feat2.shape
         
@@ -318,11 +398,11 @@ class DINOv2FineTuner:
         if len(src_kps_vis) == 0:
             return 0.0
         
-        # Convert pixel coordinates to feature grid coordinates
-        src_kps_grid = (src_kps_vis / self.patch_size).floor().long()
-        trg_kps_grid = (trg_kps_vis / self.patch_size).floor().long()
+        # Convert pixel coordinates to feature grid coordinates using map_keypoints
+        src_kps_grid = self.feature_extractor.map_keypoints(src_kps_vis, inverse=False).floor().long()
+        trg_kps_grid = self.feature_extractor.map_keypoints(trg_kps_vis, inverse=False).floor().long()
         
-        # Clamp coordinates to valid feature map range [0, dim-1] using correct dimensions
+        # Clamp coordinates to valid feature map range
         src_kps_grid[:, 0] = src_kps_grid[:, 0].clamp(0, W1 - 1)
         src_kps_grid[:, 1] = src_kps_grid[:, 1].clamp(0, H1 - 1)
         trg_kps_grid[:, 0] = trg_kps_grid[:, 0].clamp(0, W2 - 1)
@@ -353,33 +433,51 @@ class DINOv2FineTuner:
     
     @torch.no_grad()
     def val_step(self, batch):
-        """Single validation step."""
+        """Single validation step using cached features.
+        
+        Args:
+            batch: Dictionary containing 'src_name', 'trg_name', 'src_kps', 'trg_kps'
+        """
         self.backbone.eval()
         
-        src_img = batch['src_img']
-        trg_img = batch['trg_img']
+        # Get image names and keypoints
+        src_name = batch['src_name']
+        trg_name = batch['trg_name']
         src_kps = batch['src_kps']
         trg_kps = batch['trg_kps']
         
-        if isinstance(src_img, Image.Image):
-            src_tensor = self.preprocess_image(src_img)
-            trg_tensor = self.preprocess_image(trg_img)
-        else:
-            src_tensor = src_img.to(self.device)
-            trg_tensor = trg_img.to(self.device)
+        # Get cached features (required)
+        if src_name not in self.features_cache or trg_name not in self.features_cache:
+            raise RuntimeError(f"Features not cached for {src_name} or {trg_name}. "
+                             "Call extract_all_features() before validation.")
         
+        feat1 = self.features_cache[src_name]['features'].to(self.device)
+        feat2 = self.features_cache[trg_name]['features'].to(self.device)
+        src_new_w, src_new_h = self.features_cache[src_name]['tensor_size']
+        trg_new_w, trg_new_h = self.features_cache[trg_name]['tensor_size']
+        src_orig_w, src_orig_h = self.features_cache[src_name]['orig_size']
+        trg_orig_w, trg_orig_h = self.features_cache[trg_name]['orig_size']
+        
+        # Convert keypoints to tensors
         if not isinstance(src_kps, torch.Tensor):
             src_kps = torch.tensor(src_kps, dtype=torch.float32)
             trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
         
+        # Scale keypoints to match resized images
+        if src_kps.shape[-1] >= 2:
+            src_kps = src_kps.clone()
+            src_kps[:, 0] = src_kps[:, 0] * (src_new_w / src_orig_w)
+            src_kps[:, 1] = src_kps[:, 1] * (src_new_h / src_orig_h)
+        
+        if trg_kps.shape[-1] >= 2:
+            trg_kps = trg_kps.clone()
+            trg_kps[:, 0] = trg_kps[:, 0] * (trg_new_w / trg_orig_w)
+            trg_kps[:, 1] = trg_kps[:, 1] * (trg_new_h / trg_orig_h)
+        
         src_kps = src_kps.to(self.device)
         trg_kps = trg_kps.to(self.device)
         
-        feat1 = self.extract_features(src_tensor, requires_grad=False)
-        feat2 = self.extract_features(trg_tensor, requires_grad=False)
-        
-        # Extract features at keypoint locations
-        # Note: feat1 and feat2 may have different shapes if images have different sizes
+        # Get feature map dimensions
         B1, C1, H1, W1 = feat1.shape
         B2, C2, H2, W2 = feat2.shape
         
@@ -395,11 +493,11 @@ class DINOv2FineTuner:
         if len(src_kps_vis) == 0:
             return 0.0
         
-        # Convert pixel coordinates to feature grid coordinates
-        src_kps_grid = (src_kps_vis / self.patch_size).floor().long()
-        trg_kps_grid = (trg_kps_vis / self.patch_size).floor().long()
+        # Convert pixel coordinates to feature grid coordinates using map_keypoints
+        src_kps_grid = self.feature_extractor.map_keypoints(src_kps_vis, inverse=False).floor().long()
+        trg_kps_grid = self.feature_extractor.map_keypoints(trg_kps_vis, inverse=False).floor().long()
         
-        # Clamp coordinates to valid feature map range [0, dim-1] using correct dimensions
+        # Clamp coordinates to valid feature map range
         src_kps_grid[:, 0] = src_kps_grid[:, 0].clamp(0, W1 - 1)
         src_kps_grid[:, 1] = src_kps_grid[:, 1].clamp(0, H1 - 1)
         trg_kps_grid[:, 0] = trg_kps_grid[:, 0].clamp(0, W2 - 1)
@@ -436,6 +534,8 @@ class DINOv2FineTuner:
         """
         Main training loop with loss visualization.
         
+        Features are always pre-extracted before training begins.
+        
         Args:
             train_dataset: Training dataset (SPair71kPairs or similar)
             val_dataset: Optional validation dataset
@@ -449,6 +549,14 @@ class DINOv2FineTuner:
         Returns:
             history: Dictionary containing training history
         """
+        # Always pre-extract features before training
+        print("\n" + "="*60)
+        print("Pre-extracting features...")
+        print("="*60)
+        self.extract_all_features(train_dataset)
+        if val_dataset is not None:
+            self.extract_all_features(val_dataset)
+        
         # Create data loaders
         train_loader = DataLoader(
             train_dataset, 
@@ -488,6 +596,7 @@ class DINOv2FineTuner:
         print(f"Training samples: {len(train_dataset)}")
         print(f"Validation samples: {len(val_dataset) if val_dataset else 0}")
         print(f"Device: {self.device}")
+        print(f"Cached images: {len(self.features_cache)}")
         print(f"{'='*60}\n")
         
         best_val_loss = float('inf')
