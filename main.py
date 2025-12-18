@@ -21,7 +21,7 @@ def main():
                                   help="DINOv2 model variant to use")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
-    fine_tune_parser.add_argument("--lr", type=float, default=1e-5,
+    fine_tune_parser.add_argument("--lr", type=float, default=1e-3,
                                   help="Learning rate for training")
     fine_tune_parser.add_argument("--epochs", type=int, default=5,
                                   help="Number of training epochs")
