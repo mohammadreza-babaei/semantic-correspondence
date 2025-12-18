@@ -9,6 +9,7 @@ import numpy as np
 from pathlib import Path
 import os
 
+from src.new_loss import loss as the_new_loss
 from src.loss_and_model import cal_clip_loss
 
 class DINOv2FeatureExtractor:
@@ -415,13 +416,12 @@ class DINOv2FineTuner:
         src_kps_features = feat1_flat[src_kps_grid[:, 1], src_kps_grid[:, 0]]  # (N, C)
         trg_kps_features = feat2_flat[trg_kps_grid[:, 1], trg_kps_grid[:, 0]]  # (N, C)
         
-        # Compute loss using cal_clip_loss
-        loss = cal_clip_loss(
-            src_kps_features,
-            trg_kps_features,
-            self.logit_scale.exp().clamp(max=100),
-            self_logit_scale=self.self_logit_scale.exp().clamp(max=100)
-        )
+        # Add batch dimension to keypoints: (N, 2) -> (1, N, 2)
+        src_kps_batch = src_kps_vis.unsqueeze(0)
+        trg_kps_batch = trg_kps_vis.unsqueeze(0)
+        # Use the new image sizes from the tensor (feature extraction resized images)
+        img_size = (src_new_h, src_new_w)
+        loss = the_new_loss(feat1, feat2, src_kps_batch, trg_kps_batch, img_size, temperature=10.0)
         
         # Backward pass
         self.optimizer.zero_grad()
