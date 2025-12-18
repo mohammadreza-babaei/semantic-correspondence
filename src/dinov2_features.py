@@ -12,6 +12,9 @@ import os
 from src.new_loss import loss as the_new_loss
 from src.loss_and_model import cal_clip_loss
 
+# Standard image size for all feature extraction (divisible by patch_size=14)
+STANDARD_SIZE = 514
+
 class DINOv2FeatureExtractor:
     def __init__(self, model_name='dinov2_vits14', device='cuda' if torch.cuda.is_available() else 'cpu'):
         """
@@ -149,8 +152,12 @@ class DINOv2FeatureExtractor:
 class DINOv2FineTuner:
     """Fine-tuning trainer for DINOv2-based semantic correspondence by unfreezing last layers.
     
-    Uses DINOv2FeatureExtractor for feature extraction. Can optionally use pre-extracted
-    features for the frozen layers and only compute the unfrozen layers during training.
+    Architecture for gradient flow:
+    - Pre-extracts INTERMEDIATE features from frozen blocks (cached to disk)
+    - During training, only the unfrozen blocks + norm are computed with gradients
+    - All images are resized to STANDARD_SIZE (514x514) for consistent feature maps
+    
+    This allows efficient training while maintaining proper gradient flow.
     """
     
     def __init__(
@@ -189,6 +196,7 @@ class DINOv2FineTuner:
         
         # Store number of unfrozen blocks for feature caching logic
         self.num_unfrozen_blocks = num_unfrozen_blocks
+        self.num_frozen_blocks = len(self.backbone.blocks) - num_unfrozen_blocks
         
         # Freeze all parameters first
         for param in self.backbone.parameters():
@@ -197,7 +205,7 @@ class DINOv2FineTuner:
         # Unfreeze the last N transformer blocks
         num_blocks = len(self.backbone.blocks)
         print(f"Total transformer blocks: {num_blocks}")
-        print(f"Unfreezing last {num_unfrozen_blocks} blocks...")
+        print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
         
         blocks_to_unfreeze = list(self.backbone.blocks)[-num_unfrozen_blocks:]
         for block in blocks_to_unfreeze:
@@ -242,36 +250,104 @@ class DINOv2FineTuner:
             'learning_rates': []
         }
         
-        # Pre-extracted features cache (populated by extract_all_features)
+        # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
+        # These are the inputs to the unfrozen blocks
         self.features_cache = {}
+    
+    def extract_intermediate_features(self, image_tensor):
+        """
+        Extract INTERMEDIATE features - output of frozen blocks, before unfrozen blocks.
+        
+        Args:
+            image_tensor: Preprocessed image tensor (B, C, H, W)
+            
+        Returns:
+            torch.Tensor: Intermediate token features (B, N, C) - input to unfrozen blocks
+        """
+        with torch.no_grad():
+            # Run patch embedding
+            x = self.backbone.patch_embed(image_tensor)
+            
+            # Add CLS token
+            cls_tokens = self.backbone.cls_token.expand(x.shape[0], -1, -1)
+            x = torch.cat((cls_tokens, x), dim=1)
+            
+            # Add position embeddings
+            x = x + self.backbone.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
+            
+            # Run through FROZEN blocks only
+            for i, block in enumerate(self.backbone.blocks):
+                if i >= self.num_frozen_blocks:
+                    break
+                x = block(x)
+            
+            return x
+    
+    def forward_unfrozen_blocks(self, intermediate_features):
+        """
+        Run intermediate features through unfrozen blocks + norm.
+        
+        This method DOES track gradients for training.
+        
+        Args:
+            intermediate_features: Output from frozen blocks (B, N, C)
+            
+        Returns:
+            torch.Tensor: Feature map (B, C, H, W) - L2 normalized spatial features
+        """
+        x = intermediate_features
+        
+        # Run through UNFROZEN blocks
+        for block in list(self.backbone.blocks)[-self.num_unfrozen_blocks:]:
+            x = block(x)
+        
+        # Apply final norm
+        x = self.backbone.norm(x)
+        
+        # Remove CLS token to get patch tokens only
+        patch_tokens = x[:, 1:]  # (B, N, C)
+        
+        # Reshape to spatial grid
+        B, N, C = patch_tokens.shape
+        H = W = int(N ** 0.5)  # For 514x514 input with patch_size=14: 60x60
+        assert H * W == N, f"Patch count {N} is not a perfect square"
+        
+        feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
+        
+        # L2 normalize features
+        feature_map = F.normalize(feature_map, dim=1)
+        
+        return feature_map
     
     def extract_all_features(self, dataset, show_progress=True):
         """
-        Pre-extract features for all images across all dataset splits.
+        Pre-extract INTERMEDIATE features for all images at STANDARD_SIZE (514x514).
         
-        Features are stored in self.features_cache indexed by image name and saved to disk
-        in a single file for reuse across runs.
+        Intermediate features are the output of frozen blocks (before unfrozen blocks).
+        During training, only unfrozen blocks are computed with gradients.
         
         Args:
             dataset: SPair71kPairs dataset (any split, will extract from all JPEGImages)
             show_progress: Whether to show progress bar
             
         Returns:
-            dict: Dictionary mapping image names to feature info
+            dict: Dictionary mapping image names to intermediate feature info
         """
         from tqdm import tqdm
         
         # Create cache directory and file path
+        # Include num_frozen_blocks in filename since intermediate features depend on it
         cache_dir = Path('checkpoints') / 'feature_cache'
         cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = cache_dir / f"{self.model_name}_features.pt"
+        cache_file = cache_dir / f"{self.model_name}_intermediate_{self.num_frozen_blocks}frozen.pt"
         
         # Try to load all features from disk cache first
         if cache_file.exists():
             try:
-                print(f"Loading features from {cache_file}...")
-                self.features_cache = torch.load(cache_file, map_location='cpu')
-                print(f"Loaded {len(self.features_cache)} cached features from disk")
+                print(f"Loading intermediate features from {cache_file}...")
+                self.features_cache = torch.load(cache_file, map_location=self.device)
+                print(f"Loaded {len(self.features_cache)} cached intermediate features from disk")
+                print(f"Features stored in VRAM (GPU memory)")
                 return self.features_cache
             except Exception as e:
                 print(f"Warning: Failed to load cache file: {e}")
@@ -292,9 +368,10 @@ class DINOv2FineTuner:
                     unique_images.add(img_name)
         
         print(f"Found {len(unique_images)} unique images across all splits")
+        print(f"Extracting intermediate features at {STANDARD_SIZE}x{STANDARD_SIZE}...")
         
         # Extract features for each unique image
-        iterator = tqdm(unique_images, desc="Extracting features") if show_progress else unique_images
+        iterator = tqdm(unique_images, desc="Extracting intermediate features") if show_progress else unique_images
         
         for img_name in iterator:
             if img_name in self.features_cache:
@@ -303,33 +380,31 @@ class DINOv2FineTuner:
             # Get image path
             img_path = dataset.root / 'JPEGImages' / f'{img_name}.jpg'
             
-            # Load and preprocess image
+            # Load image and get original size
             img = Image.open(img_path).convert('RGB')
             orig_w, orig_h = img.size
             
-            img_tensor = self.feature_extractor.preprocess_image_pil(img)
-            new_h, new_w = img_tensor.shape[2], img_tensor.shape[3]
+            # Preprocess at STANDARD_SIZE (514x514)
+            img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(STANDARD_SIZE, STANDARD_SIZE))
             
-            # Extract features using the feature extractor
-            features = self.feature_extractor.extract_features(img_tensor)
+            # Extract INTERMEDIATE features (output of frozen blocks)
+            intermediate = self.extract_intermediate_features(img_tensor)
             
-            # Store features (move to CPU to save GPU memory)
+            # Store intermediate features in GPU memory (VRAM)
             self.features_cache[img_name] = {
-                'features': features.cpu(),
-                'shape': features.shape,
+                'intermediate': intermediate,  # Keep in VRAM: (1, N+1, C) including CLS token
                 'orig_size': (orig_w, orig_h),
-                'tensor_size': (new_w, new_h),
             }
         
         # Save all features to disk in a single file
         try:
-            print(f"Saving {len(self.features_cache)} features to {cache_file}...")
+            print(f"Saving {len(self.features_cache)} intermediate features to {cache_file}...")
             torch.save(self.features_cache, cache_file)
             print("Features saved successfully")
         except Exception as e:
             print(f"Warning: Failed to save cache file: {e}")
         
-        print(f"Cached features for {len(self.features_cache)} images")
+        print(f"Cached intermediate features for {len(self.features_cache)} images")
         return self.features_cache
     
     def clear_features_cache(self):
@@ -337,14 +412,19 @@ class DINOv2FineTuner:
         self.features_cache = {}
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
     
     def train_step(self, batch):
-        """Single training step using cached features.
+        """Single training step using cached intermediate features.
+        
+        Loads intermediate features (output of frozen blocks) and runs them through
+        unfrozen blocks with gradient tracking for proper training.
         
         Args:
             batch: Dictionary containing 'src_name', 'trg_name', 'src_kps', 'trg_kps'
         """
         self.backbone.train()
+        self.optimizer.zero_grad()
         
         # Get image names and keypoints
         src_name = batch['src_name']
@@ -352,89 +432,74 @@ class DINOv2FineTuner:
         src_kps = batch['src_kps']
         trg_kps = batch['trg_kps']
         
-        # Get cached features (required)
+        # Get cached INTERMEDIATE features (required)
         if src_name not in self.features_cache or trg_name not in self.features_cache:
-            raise RuntimeError(f"Features not cached for {src_name} or {trg_name}. "
+            raise RuntimeError(f"Intermediate features not cached for {src_name} or {trg_name}. "
                              "Call extract_all_features() before training.")
         
-        feat1 = self.features_cache[src_name]['features'].to(self.device)
-        feat2 = self.features_cache[trg_name]['features'].to(self.device)
-        src_new_w, src_new_h = self.features_cache[src_name]['tensor_size']
-        trg_new_w, trg_new_h = self.features_cache[trg_name]['tensor_size']
+        # Load intermediate features (already on device/GPU)
+        src_intermediate = self.features_cache[src_name]['intermediate']
+        trg_intermediate = self.features_cache[trg_name]['intermediate']
         src_orig_w, src_orig_h = self.features_cache[src_name]['orig_size']
         trg_orig_w, trg_orig_h = self.features_cache[trg_name]['orig_size']
+        
+        # Run through UNFROZEN blocks (with gradients!)
+        feat1 = self.forward_unfrozen_blocks(src_intermediate)
+        feat2 = self.forward_unfrozen_blocks(trg_intermediate)
         
         # Convert keypoints to tensors
         if not isinstance(src_kps, torch.Tensor):
             src_kps = torch.tensor(src_kps, dtype=torch.float32)
             trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
         
-        # Scale keypoints to match resized images
-        if src_kps.shape[-1] >= 2:
-            src_kps = src_kps.clone()
-            src_kps[:, 0] = src_kps[:, 0] * (src_new_w / src_orig_w)
-            src_kps[:, 1] = src_kps[:, 1] * (src_new_h / src_orig_h)
+        # Scale keypoints from original image size to STANDARD_SIZE
+        src_kps = src_kps.clone()
+        src_kps[:, 0] = src_kps[:, 0] * (STANDARD_SIZE / src_orig_w)
+        src_kps[:, 1] = src_kps[:, 1] * (STANDARD_SIZE / src_orig_h)
         
-        if trg_kps.shape[-1] >= 2:
-            trg_kps = trg_kps.clone()
-            trg_kps[:, 0] = trg_kps[:, 0] * (trg_new_w / trg_orig_w)
-            trg_kps[:, 1] = trg_kps[:, 1] * (trg_new_h / trg_orig_h)
+        trg_kps = trg_kps.clone()
+        trg_kps[:, 0] = trg_kps[:, 0] * (STANDARD_SIZE / trg_orig_w)
+        trg_kps[:, 1] = trg_kps[:, 1] * (STANDARD_SIZE / trg_orig_h)
         
         src_kps = src_kps.to(self.device)
         trg_kps = trg_kps.to(self.device)
         
-        # Get feature map dimensions
-        B1, C1, H1, W1 = feat1.shape
-        B2, C2, H2, W2 = feat2.shape
-        
-        # Handle visibility if present
+        # Handle visibility: skip invisible keypoints
         if src_kps.shape[-1] == 3:
             vis = (src_kps[:, 2] > 0) & (trg_kps[:, 2] > 0)
             src_kps_vis = src_kps[vis, :2]
             trg_kps_vis = trg_kps[vis, :2]
         else:
-            src_kps_vis = src_kps
-            trg_kps_vis = trg_kps
+            src_kps_vis = src_kps[:, :2] if src_kps.shape[-1] > 2 else src_kps
+            trg_kps_vis = trg_kps[:, :2] if trg_kps.shape[-1] > 2 else trg_kps
         
         if len(src_kps_vis) == 0:
             return 0.0
         
-        # Convert pixel coordinates to feature grid coordinates using map_keypoints
-        src_kps_grid = self.feature_extractor.map_keypoints(src_kps_vis, inverse=False).floor().long()
-        trg_kps_grid = self.feature_extractor.map_keypoints(trg_kps_vis, inverse=False).floor().long()
-        
-        # Clamp coordinates to valid feature map range
-        src_kps_grid[:, 0] = src_kps_grid[:, 0].clamp(0, W1 - 1)
-        src_kps_grid[:, 1] = src_kps_grid[:, 1].clamp(0, H1 - 1)
-        trg_kps_grid[:, 0] = trg_kps_grid[:, 0].clamp(0, W2 - 1)
-        trg_kps_grid[:, 1] = trg_kps_grid[:, 1].clamp(0, H2 - 1)
-        
-        # Extract features at keypoint locations
-        feat1_flat = feat1[0].permute(1, 2, 0)  # (H, W, C)
-        feat2_flat = feat2[0].permute(1, 2, 0)  # (H, W, C)
-        
-        src_kps_features = feat1_flat[src_kps_grid[:, 1], src_kps_grid[:, 0]]  # (N, C)
-        trg_kps_features = feat2_flat[trg_kps_grid[:, 1], trg_kps_grid[:, 0]]  # (N, C)
-        
         # Add batch dimension to keypoints: (N, 2) -> (1, N, 2)
         src_kps_batch = src_kps_vis.unsqueeze(0)
         trg_kps_batch = trg_kps_vis.unsqueeze(0)
-        # Use the new image sizes from the tensor (feature extraction resized images)
-        img_size = (src_new_h, src_new_w)
-        loss = the_new_loss(feat1, feat2, src_kps_batch, trg_kps_batch, img_size, temperature=10.0)
         
-        # Backward pass
-        self.optimizer.zero_grad()
-        loss.requires_grad = True
+        # Compute loss - all images are STANDARD_SIZE now
+        loss = the_new_loss(
+            feat1, feat2, 
+            src_kps_batch, trg_kps_batch, 
+            src_img_size=(STANDARD_SIZE, STANDARD_SIZE),
+            trg_img_size=(STANDARD_SIZE, STANDARD_SIZE),
+            temperature=10.0
+        )
+        
+        # Backward pass (gradients flow through unfrozen blocks)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.backbone.parameters(), max_norm=1.0)
         self.optimizer.step()
         
         return loss.item()
     
-    @torch.no_grad()
     def val_step(self, batch):
-        """Single validation step using cached features.
+        """Single validation step using cached intermediate features.
+        
+        Uses the same loss function as training for consistent metrics.
         
         Args:
             batch: Dictionary containing 'src_name', 'trg_name', 'src_kps', 'trg_kps'
@@ -447,77 +512,64 @@ class DINOv2FineTuner:
         src_kps = batch['src_kps']
         trg_kps = batch['trg_kps']
         
-        # Get cached features (required)
+        # Get cached INTERMEDIATE features (required)
         if src_name not in self.features_cache or trg_name not in self.features_cache:
-            raise RuntimeError(f"Features not cached for {src_name} or {trg_name}. "
+            raise RuntimeError(f"Intermediate features not cached for {src_name} or {trg_name}. "
                              "Call extract_all_features() before validation.")
         
-        feat1 = self.features_cache[src_name]['features'].to(self.device)
-        feat2 = self.features_cache[trg_name]['features'].to(self.device)
-        src_new_w, src_new_h = self.features_cache[src_name]['tensor_size']
-        trg_new_w, trg_new_h = self.features_cache[trg_name]['tensor_size']
+        # Load intermediate features (already on device/GPU)
+        src_intermediate = self.features_cache[src_name]['intermediate']
+        trg_intermediate = self.features_cache[trg_name]['intermediate']
         src_orig_w, src_orig_h = self.features_cache[src_name]['orig_size']
         trg_orig_w, trg_orig_h = self.features_cache[trg_name]['orig_size']
+        
+        # Run through unfrozen blocks (no gradients in eval)
+        with torch.no_grad():
+            feat1 = self.forward_unfrozen_blocks(src_intermediate)
+            feat2 = self.forward_unfrozen_blocks(trg_intermediate)
         
         # Convert keypoints to tensors
         if not isinstance(src_kps, torch.Tensor):
             src_kps = torch.tensor(src_kps, dtype=torch.float32)
             trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
         
-        # Scale keypoints to match resized images
-        if src_kps.shape[-1] >= 2:
-            src_kps = src_kps.clone()
-            src_kps[:, 0] = src_kps[:, 0] * (src_new_w / src_orig_w)
-            src_kps[:, 1] = src_kps[:, 1] * (src_new_h / src_orig_h)
+        # Scale keypoints from original image size to STANDARD_SIZE
+        src_kps = src_kps.clone()
+        src_kps[:, 0] = src_kps[:, 0] * (STANDARD_SIZE / src_orig_w)
+        src_kps[:, 1] = src_kps[:, 1] * (STANDARD_SIZE / src_orig_h)
         
-        if trg_kps.shape[-1] >= 2:
-            trg_kps = trg_kps.clone()
-            trg_kps[:, 0] = trg_kps[:, 0] * (trg_new_w / trg_orig_w)
-            trg_kps[:, 1] = trg_kps[:, 1] * (trg_new_h / trg_orig_h)
+        trg_kps = trg_kps.clone()
+        trg_kps[:, 0] = trg_kps[:, 0] * (STANDARD_SIZE / trg_orig_w)
+        trg_kps[:, 1] = trg_kps[:, 1] * (STANDARD_SIZE / trg_orig_h)
         
         src_kps = src_kps.to(self.device)
         trg_kps = trg_kps.to(self.device)
         
-        # Get feature map dimensions
-        B1, C1, H1, W1 = feat1.shape
-        B2, C2, H2, W2 = feat2.shape
-        
-        # Handle visibility if present
+        # Handle visibility: skip invisible keypoints
         if src_kps.shape[-1] == 3:
             vis = (src_kps[:, 2] > 0) & (trg_kps[:, 2] > 0)
             src_kps_vis = src_kps[vis, :2]
             trg_kps_vis = trg_kps[vis, :2]
         else:
-            src_kps_vis = src_kps
-            trg_kps_vis = trg_kps
+            src_kps_vis = src_kps[:, :2] if src_kps.shape[-1] > 2 else src_kps
+            trg_kps_vis = trg_kps[:, :2] if trg_kps.shape[-1] > 2 else trg_kps
         
         if len(src_kps_vis) == 0:
             return 0.0
         
-        # Convert pixel coordinates to feature grid coordinates using map_keypoints
-        src_kps_grid = self.feature_extractor.map_keypoints(src_kps_vis, inverse=False).floor().long()
-        trg_kps_grid = self.feature_extractor.map_keypoints(trg_kps_vis, inverse=False).floor().long()
+        # Add batch dimension to keypoints: (N, 2) -> (1, N, 2)
+        src_kps_batch = src_kps_vis.unsqueeze(0)
+        trg_kps_batch = trg_kps_vis.unsqueeze(0)
         
-        # Clamp coordinates to valid feature map range
-        src_kps_grid[:, 0] = src_kps_grid[:, 0].clamp(0, W1 - 1)
-        src_kps_grid[:, 1] = src_kps_grid[:, 1].clamp(0, H1 - 1)
-        trg_kps_grid[:, 0] = trg_kps_grid[:, 0].clamp(0, W2 - 1)
-        trg_kps_grid[:, 1] = trg_kps_grid[:, 1].clamp(0, H2 - 1)
-        
-        # Extract features at keypoint locations
-        feat1_flat = feat1[0].permute(1, 2, 0)  # (H, W, C)
-        feat2_flat = feat2[0].permute(1, 2, 0)  # (H, W, C)
-        
-        src_kps_features = feat1_flat[src_kps_grid[:, 1], src_kps_grid[:, 0]]  # (N, C)
-        trg_kps_features = feat2_flat[trg_kps_grid[:, 1], trg_kps_grid[:, 0]]  # (N, C)
-        
-        # Compute loss using cal_clip_loss
-        loss = cal_clip_loss(
-            src_kps_features,
-            trg_kps_features,
-            self.logit_scale.exp().clamp(max=100),
-            self_logit_scale=self.self_logit_scale.exp().clamp(max=100)
-        )
+        # Compute loss - same as training for consistent metrics
+        with torch.no_grad():
+            loss = the_new_loss(
+                feat1, feat2, 
+                src_kps_batch, trg_kps_batch, 
+                src_img_size=(STANDARD_SIZE, STANDARD_SIZE),
+                trg_img_size=(STANDARD_SIZE, STANDARD_SIZE),
+                temperature=10.0
+            )
         
         return loss.item()
     

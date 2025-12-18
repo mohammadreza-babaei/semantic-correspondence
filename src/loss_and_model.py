@@ -328,19 +328,36 @@ class DinoV2KeypointDetector(nn.Module):
         super().__init__()
         # Load precomputed features if checkpoint is provided
         self.precomputed_features = None
-
-        print(f"Loading precomputed features from {features_checkpoint}...")
-        checkpoint = torch.load(features_checkpoint)
-        self.precomputed_features = checkpoint['features']
-        embed_dim = 384  # DINOv2-ViT-S/14 embedding dimension
-        print(f"Loaded {len(self.precomputed_features)} precomputed features")
+        self.feature_extractor = None
         
+        # Determine embed_dim based on model variant
+        embed_dim_map = {
+            'dinov2_vits14': 384,
+            'dinov2_vitb14': 768,
+            'dinov2_vitl14': 1024,
+            'dinov2_vitg14': 1536,
+        }
+        embed_dim = embed_dim_map.get(model_name, 384)
+        
+        if features_checkpoint is not None:
+            print(f"Loading precomputed features from {features_checkpoint}...")
+            checkpoint = torch.load(features_checkpoint)
+            self.precomputed_features = checkpoint['features']
+            print(f"Loaded {len(self.precomputed_features)} precomputed features")
+        else:
+            # Create feature extractor for on-the-fly extraction
+            from src.dinov2_features import DINOv2FeatureExtractor
+            print(f"Initializing DINOv2FeatureExtractor for on-the-fly extraction...")
+            self.feature_extractor = DINOv2FeatureExtractor(model_name=model_name)
+            if freeze_backbone:
+                for param in self.feature_extractor.model.parameters():
+                    param.requires_grad = False
         
         # 2. Prediction Head (Conv 1x1)
-        # Trasforma i 384 canali in N heatmap (una per keypoint)
+        # Transforms embed_dim channels into N heatmaps (one per keypoint)
         self.head = nn.Conv2d(embed_dim, num_keypoints, kernel_size=1)
         
-        # Inizializzazione pesi della testa (opzionale ma consigliata)
+        # Initialize head weights
         nn.init.xavier_uniform_(self.head.weight)
         nn.init.zeros_(self.head.bias)
 

@@ -1,10 +1,26 @@
 import torch
 import torch.nn.functional as F
 
-def loss(src_feats, trg_feats, src_kps, trg_kps, img_size, temperature=10.0):
+def loss(src_feats, trg_feats, src_kps, trg_kps, src_img_size, trg_img_size=None, temperature=10.0):
     """
     Computes L_dense (Soft-Argmax + L2) robustly by decoupling Source and Target dimensions.
+    
+    Args:
+        src_feats: Source features (B, C, H_src, W_src)
+        trg_feats: Target features (B, C, H_trg, W_trg)
+        src_kps: Source keypoints (B, N, 2) in pixel coordinates
+        trg_kps: Target keypoints (B, N, 2) in pixel coordinates
+        src_img_size: (H, W) tuple for source image size
+        trg_img_size: (H, W) tuple for target image size. If None, uses src_img_size.
+        temperature: Temperature for softmax sharpness (higher = sharper)
+    
+    Returns:
+        loss: MSE loss between predicted and ground truth keypoints in [-1, 1] space
     """
+    # Handle backwards compatibility: if trg_img_size not provided, use src_img_size
+    if trg_img_size is None:
+        trg_img_size = src_img_size
+    
     # 1. Get Dimensions Independently
     # Source: Used ONLY to extract the descriptor at the keypoint
     B, C, H_src, W_src = src_feats.shape
@@ -12,13 +28,14 @@ def loss(src_feats, trg_feats, src_kps, trg_kps, img_size, temperature=10.0):
     # Target: Used for the search space (heatmap size)
     _, _, H_trg, W_trg = trg_feats.shape
     
-    H_img, W_img = img_size
+    H_src_img, W_src_img = src_img_size
+    H_trg_img, W_trg_img = trg_img_size
 
-    # 2. Normalize Source Keypoints (using Image Dimensions)
+    # 2. Normalize Source Keypoints (using SOURCE Image Dimensions)
     # We use src_kps to sample from src_feats
     src_grid = src_kps.clone()
-    src_grid[:, :, 0] = 2.0 * (src_kps[:, :, 0] / (W_img - 1)) - 1.0
-    src_grid[:, :, 1] = 2.0 * (src_kps[:, :, 1] / (H_img - 1)) - 1.0
+    src_grid[:, :, 0] = 2.0 * (src_kps[:, :, 0] / (W_src_img - 1)) - 1.0
+    src_grid[:, :, 1] = 2.0 * (src_kps[:, :, 1] / (H_src_img - 1)) - 1.0
     src_grid = src_grid.unsqueeze(1) # (B, 1, N, 2)
 
     # 3. Extract Source Descriptors
@@ -36,7 +53,6 @@ def loss(src_feats, trg_feats, src_kps, trg_kps, img_size, temperature=10.0):
 
     # 5. Soft-Argmax (Prediction)
     # A. Reshape Heatmap to TARGET dimensions
-    # FIX: Use H_trg and W_trg here, NOT H_src/W_src
     heatmaps = raw_heatmaps.view(B, -1, H_trg, W_trg)
     
     # B. Spatial Softmax
@@ -57,10 +73,10 @@ def loss(src_feats, trg_feats, src_kps, trg_kps, img_size, temperature=10.0):
     
     pred_kps = torch.stack([pred_x, pred_y], dim=-1) # (B, N, 2) in range [-1, 1]
 
-    # 6. Normalize Ground Truth Target Keypoints
+    # 6. Normalize Ground Truth Target Keypoints (using TARGET Image Dimensions)
     trg_norm = trg_kps.clone()
-    trg_norm[:, :, 0] = 2.0 * (trg_kps[:, :, 0] / (W_img - 1)) - 1.0
-    trg_norm[:, :, 1] = 2.0 * (trg_kps[:, :, 1] / (H_img - 1)) - 1.0
+    trg_norm[:, :, 0] = 2.0 * (trg_kps[:, :, 0] / (W_trg_img - 1)) - 1.0
+    trg_norm[:, :, 1] = 2.0 * (trg_kps[:, :, 1] / (H_trg_img - 1)) - 1.0
 
     # 7. Calculate Loss
     return F.mse_loss(pred_kps, trg_norm)
