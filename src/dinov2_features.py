@@ -10,7 +10,6 @@ from pathlib import Path
 import os
 
 from src.new_loss import loss as the_new_loss
-from src.loss_and_model import cal_clip_loss
 
 # Standard image size for all feature extraction (divisible by patch_size=14)
 STANDARD_SIZE = 518 # Multiple of 14 (14*37=518), used in the DINOv2 paper
