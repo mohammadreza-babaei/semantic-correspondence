@@ -344,9 +344,9 @@ class DINOv2FineTuner:
         if cache_file.exists():
             try:
                 print(f"Loading intermediate features from {cache_file}...")
-                self.features_cache = torch.load(cache_file, map_location=self.device)
+                self.features_cache = torch.load(cache_file, map_location='cpu')
                 print(f"Loaded {len(self.features_cache)} cached intermediate features from disk")
-                print(f"Features stored in VRAM (GPU memory)")
+                print(f"Features stored in RAM (CPU memory)")
                 return self.features_cache
             except Exception as e:
                 print(f"Warning: Failed to load cache file: {e}")
@@ -389,9 +389,9 @@ class DINOv2FineTuner:
             # Extract INTERMEDIATE features (output of frozen blocks)
             intermediate = self.extract_intermediate_features(img_tensor)
             
-            # Store intermediate features in GPU memory (VRAM)
+            # Store intermediate features in CPU memory (RAM) to save VRAM
             self.features_cache[img_name] = {
-                'intermediate': intermediate,  # Keep in VRAM: (1, N+1, C) including CLS token
+                'intermediate': intermediate.cpu(),  # Move to CPU: (1, N+1, C) including CLS token
                 'orig_size': (orig_w, orig_h),
             }
         
@@ -436,9 +436,9 @@ class DINOv2FineTuner:
             raise RuntimeError(f"Intermediate features not cached for {src_name} or {trg_name}. "
                              "Call extract_all_features() before training.")
         
-        # Load intermediate features (already on device/GPU)
-        src_intermediate = self.features_cache[src_name]['intermediate']
-        trg_intermediate = self.features_cache[trg_name]['intermediate']
+        # Load intermediate features from CPU cache and move to GPU for computation
+        src_intermediate = self.features_cache[src_name]['intermediate'].to(self.device)
+        trg_intermediate = self.features_cache[trg_name]['intermediate'].to(self.device)
         src_orig_w, src_orig_h = self.features_cache[src_name]['orig_size']
         trg_orig_w, trg_orig_h = self.features_cache[trg_name]['orig_size']
         
@@ -516,9 +516,9 @@ class DINOv2FineTuner:
             raise RuntimeError(f"Intermediate features not cached for {src_name} or {trg_name}. "
                              "Call extract_all_features() before validation.")
         
-        # Load intermediate features (already on device/GPU)
-        src_intermediate = self.features_cache[src_name]['intermediate']
-        trg_intermediate = self.features_cache[trg_name]['intermediate']
+        # Load intermediate features from CPU cache and move to GPU for computation
+        src_intermediate = self.features_cache[src_name]['intermediate'].to(self.device)
+        trg_intermediate = self.features_cache[trg_name]['intermediate'].to(self.device)
         src_orig_w, src_orig_h = self.features_cache[src_name]['orig_size']
         trg_orig_w, trg_orig_h = self.features_cache[trg_name]['orig_size']
         
@@ -606,12 +606,10 @@ class DINOv2FineTuner:
         print("Pre-extracting features...")
         print("="*60)
         self.extract_all_features(train_dataset)
-        if val_dataset is not None:
-            self.extract_all_features(val_dataset)
         
         # Create data loaders
         train_loader = DataLoader(
-            train_dataset, 
+            train_dataset,
             batch_size=batch_size, 
             shuffle=True,
             num_workers=0,  # Set to 0 for debugging, increase for speed
