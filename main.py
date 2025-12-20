@@ -5,8 +5,9 @@ from pathlib import Path
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
-from src.dinov2_features import DINOv2FeatureExtractor, DINOv2FineTuner, plot_training_history
+from src.dinov2_features import DINOv2FeatureExtractor, DINOv2FineTuner
 from src.spair_dataset import SPair71kImages, SPair71kPairs
+from src.trainer import Trainer
 
 def main():
     parser = argparse.ArgumentParser(description="Semantic Correspondence CLI")
@@ -71,8 +72,13 @@ def fine_tune(args):
     print(f"  Learning rate: {args.lr}")
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    finetuner = DINOv2FineTuner(
-        model_name=args.model_name,
+    model = Trainer(
+        model=DINOv2FineTuner(
+            model_name=args.model_name,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            device=device,
+            learning_rate=args.lr,
+        ),
         device=device,
         num_unfrozen_blocks=args.num_unfrozen_blocks,
         learning_rate=args.lr,
@@ -80,7 +86,7 @@ def fine_tune(args):
     
     # Run training
     print("\nStarting training...")
-    history = finetuner.train(
+    history = model.train(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         epochs=args.epochs,
@@ -92,13 +98,10 @@ def fine_tune(args):
     )
     
     # Plot final results
-    save_plot_path = Path(args.save_path) / 'final_training_curves.png'
-    plot_training_history(history, save_path=str(save_plot_path))
     
     print("\n" + "="*60)
     print("Fine-tuning Complete!")
     print(f"Checkpoints saved to: {args.save_path}")
-    print(f"Training curves saved to: {save_plot_path}")
     print("="*60)
     
 
