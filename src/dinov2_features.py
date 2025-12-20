@@ -13,7 +13,7 @@ from src.new_loss import loss as the_new_loss
 from src.loss_and_model import cal_clip_loss
 
 # Standard image size for all feature extraction (divisible by patch_size=14)
-STANDARD_SIZE = 514
+STANDARD_SIZE = 518 # Multiple of 14 (14*37=518), used in the DINOv2 paper
 
 class DINOv2FeatureExtractor:
     def __init__(self, model_name='dinov2_vits14', device='cuda' if torch.cuda.is_available() else 'cpu'):
@@ -155,7 +155,7 @@ class DINOv2FineTuner:
     Architecture for gradient flow:
     - Pre-extracts INTERMEDIATE features from frozen blocks (cached to disk)
     - During training, only the unfrozen blocks + norm are computed with gradients
-    - All images are resized to STANDARD_SIZE (514x514) for consistent feature maps
+    - All images are resized to STANDARD_SIZE (518x518) for consistent feature maps
     
     This allows efficient training while maintaining proper gradient flow.
     """
@@ -309,7 +309,7 @@ class DINOv2FineTuner:
         
         # Reshape to spatial grid
         B, N, C = patch_tokens.shape
-        H = W = int(N ** 0.5)  # For 514x514 input with patch_size=14: 60x60
+        H = W = int(N ** 0.5)  # For 518x518 input with patch_size=14: 60x60
         assert H * W == N, f"Patch count {N} is not a perfect square"
         
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
@@ -321,7 +321,7 @@ class DINOv2FineTuner:
     
     def extract_all_features(self, dataset, show_progress=True):
         """
-        Pre-extract INTERMEDIATE features for all images at STANDARD_SIZE (514x514).
+        Pre-extract INTERMEDIATE features for all images at STANDARD_SIZE (518x518).
         
         Intermediate features are the output of frozen blocks (before unfrozen blocks).
         During training, only unfrozen blocks are computed with gradients.
@@ -384,7 +384,7 @@ class DINOv2FineTuner:
             img = Image.open(img_path).convert('RGB')
             orig_w, orig_h = img.size
             
-            # Preprocess at STANDARD_SIZE (514x514)
+            # Preprocess at STANDARD_SIZE (518x518)
             img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(STANDARD_SIZE, STANDARD_SIZE))
             
             # Extract INTERMEDIATE features (output of frozen blocks)
