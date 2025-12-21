@@ -34,6 +34,8 @@ def main():
                                   help="Maximum iterations per epoch (useful for testing). None means full epoch")
     fine_tune_parser.add_argument("--save-path", type=str, default="checkpoints/finetuned_dinov2",
                                   help="Path to save model checkpoints")
+    fine_tune_parser.add_argument("--weights-path", type=str, default=None,
+                                  help="Path to custom model weights (.safetensors or .pth file)")
     fine_tune_parser.add_argument("--no-plot", action="store_true",
                                   help="Disable interactive plotting during training")
     
@@ -89,6 +91,7 @@ def fine_tune(args):
     model = Trainer(
     model=DINOv3FineTuner(
             model_name=args.model_name,
+            weights_path=args.weights_path,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
             device=device,
             learning_rate=args.lr,

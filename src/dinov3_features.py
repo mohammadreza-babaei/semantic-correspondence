@@ -37,7 +37,7 @@ class DINOv3FeatureExtractor:
         if weights_path:
             print(f"Loading local weights from: {weights_path}")
             
-            self.model= model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False)
+            self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
 
             # 2. Load Safetensors
             state_dict = load_file(weights_path)
@@ -58,8 +58,8 @@ class DINOv3FeatureExtractor:
             print(f"Weights loaded. Status: {msg}")
 
         else:
-            print(f"No local weights provided (or file not found). Downloading from Hub")
-            return
+            print(f"No local weights provided. Loading pretrained model from Hub...")
+            self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=True).to(self.device)
 
         self.model.eval() # Set to evaluation mode
 
@@ -209,6 +209,10 @@ class DINOv3FineTuner:
         with torch.no_grad():
             # Run patch embedding
             x = self.backbone.patch_embed(image_tensor)
+            # Ensure x is 3D: (B, N, C) where N = H*W
+            if x.ndim == 4:
+                # patch_embed outputs (B, H, W, C) -> flatten to (B, H*W, C)
+                x = x.flatten(1, 2)
             
             # Add CLS token
             cls_tokens = self.backbone.cls_token.expand(x.shape[0], -1, -1)
