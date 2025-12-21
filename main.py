@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 
 from src.dinov3_features import DINOv3FineTuner
 from src.dinov2_features import DINOv2FeatureExtractor, DINOv2FineTuner
+from src.sam_features import SAMFeatureExtractor, SAMFineTuner
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 
@@ -18,8 +19,10 @@ def main():
     
     fine_tune_parser = subparsers.add_parser("fine_tune", help="Train the model")
     fine_tune_parser.add_argument("--model-name", type=str, default="dinov2_vits14",
-                                  choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 'dinov3_vits16'],
-                                  help="DINOv2 model variant to use")
+                                  choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 
+                                           'dinov3_vits16',
+                                           'facebook/sam-vit-base', 'facebook/sam-vit-large', 'facebook/sam-vit-huge'],
+                                  help="Model variant to use (DINOv2, DINOv3, or SAM)")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
     fine_tune_parser.add_argument("--lr", type=float, default=1e-3,
@@ -34,7 +37,7 @@ def main():
                                   help="How often to log training progress (in batches)")
     fine_tune_parser.add_argument("--max-iters-per-epoch", type=int, default=None,
                                   help="Maximum iterations per epoch (useful for testing). None means full epoch")
-    fine_tune_parser.add_argument("--save-path", type=str, default="checkpoints/finetuned_dinov2",
+    fine_tune_parser.add_argument("--save-path", type=str, default=None,
                                   help="Path to save model checkpoints")
     fine_tune_parser.add_argument("--weights-path", type=str, default=None,
                                   help="Path to custom model weights (.safetensors or .pth file)")
@@ -45,16 +48,35 @@ def main():
     
     args = parser.parse_args()
 
+    # Infer model type from model name
+    if "dinov2" in args.model_name:
+        model_type = "dinov2"
+    elif "dinov3" in args.model_name:
+        model_type = "dinov3"
+    elif "sam" in args.model_name:
+        model_type = "sam"
+    else:
+        # Fallback or error, though choices constraint handles most valid cases
+        if "dino" in args.model_name:
+             model_type = "dinov2" # Default assumption for legacy
+        else:
+             raise ValueError(f"Could not infer model type from name: {args.model_name}")
+
+    # Set default save path if not provided
+    if args.save_path is None:
+        args.save_path = f"checkpoints/finetuned_{model_type}"
+
     if args.command == "fine_tune":
-        fine_tune(args)
+        fine_tune(args, model_type)
     elif args.command == "eval":
         evaluate()
 
 
-def fine_tune(args):
-    """Fine-tune Model for semantic correspondence."""
+def fine_tune(args, model_type):
+    """Fine-tune the selected model for semantic correspondence."""
+    model_display_name = model_type.upper()
     print("="*60)
-    print("Model Fine-Tuning for Semantic Correspondence")
+    print(f"{model_display_name} Fine-Tuning for Semantic Correspondence")
     print("="*60)
     
     # Get dataset path
@@ -71,33 +93,43 @@ def fine_tune(args):
     print(f"  Val samples: {len(val_dataset)}")
     
     # Initialize fine-tuner
-    print(f"\nInitializing Model Fine-Tuner...")
+    print(f"\nInitializing {model_display_name} Fine-Tuner...")
     print(f"  Model: {args.model_name}")
     print(f"  Unfrozen blocks: {args.num_unfrozen_blocks}")
     print(f"  Learning rate: {args.lr}")
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # model = Trainer(
-    #     model=DINOv2FineTuner(
-    #         model_name=args.model_name,
-    #         num_unfrozen_blocks=args.num_unfrozen_blocks,
-    #         device=device,
-    #         learning_rate=args.lr,
-    #     ),
-    #     device=device,
-    #     num_unfrozen_blocks=args.num_unfrozen_blocks,
-    #     learning_rate=args.lr,
-    # )
+    if model_type == 'dinov2':
+        fine_tuner = DINOv2FineTuner(
+            model_name=args.model_name,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            learning_rate=args.lr,
+        )
+        if args.weights_path:
+             print("Warning: Custom weights path provided but not supported for DINOv2 yet.")
 
-    model = Trainer(
-    model=DINOv3FineTuner(
+    elif model_type == 'dinov3':
+        fine_tuner = DINOv3FineTuner(
             model_name=args.model_name,
             weights_path=args.weights_path,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
             device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
             learning_rate=args.lr,
-        ),
+        )
+    elif model_type == 'sam':
+        fine_tuner = SAMFineTuner(
+            model_name=args.model_name,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            learning_rate=args.lr,
+        )
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+    model = Trainer(
+        model=fine_tuner,
         device=device,
         num_unfrozen_blocks=args.num_unfrozen_blocks,
         learning_rate=args.lr,
