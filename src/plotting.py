@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+
 
 def plot_training_history(history, save_path=None):
     """
@@ -9,6 +11,12 @@ def plot_training_history(history, save_path=None):
         history: Dictionary with 'train_loss', 'val_loss', 'epoch_train_losses'
         save_path: Optional path to save the figure
     """
+    train_df = pd.read_csv("checkpoints/finetuned_dinov2/training_log_e5_b1.csv")
+    val_df   = pd.read_csv("metrics/val_metrics.csv")
+    print(train_df.head())
+    print(val_df.head())
+
+
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
     # Plot 1: Epoch losses
@@ -37,14 +45,18 @@ def plot_training_history(history, save_path=None):
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
     
-    # Plot 3: Learning rate schedule
-    if history.get('learning_rates'):
-        axes[2].plot(history['learning_rates'], 'purple', linewidth=2)
-        axes[2].set_xlabel('Batch', fontsize=12)
-        axes[2].set_ylabel('Learning Rate', fontsize=12)
-        axes[2].set_title('Learning Rate Schedule', fontsize=14)
-        axes[2].grid(True, alpha=0.3)
-        axes[2].ticklabel_format(axis='y', style='scientific', scilimits=(0,0))
+
+    # Plot 3: PCK (Validation)
+    # axes[2].plot(val_df["epoch"], val_df["pck"], "g-o", label="PCK")
+    axes[2].plot(val_df["epoch"], val_df["val_pck"], "g-o", label="PCK")
+
+    axes[2].set_title("PCK over Epochs")
+    axes[2].set_xlabel("Epoch")
+    axes[2].set_ylabel("PCK")
+    axes[2].grid(True, alpha=0.3)
+    axes[2].legend()
+    
+
     
     plt.tight_layout()
     
