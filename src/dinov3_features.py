@@ -8,33 +8,60 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 import os
-
+from safetensors.torch import load_file 
 # Standard image size for DINOv3 feature extraction. 
 # 528 = 16 * 33 (closest multiple of 16 to the 518 used in DINOv2)
 STANDARD_SIZE = 528 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+WEIGHTS_PATH = os.path.join(script_dir, "model.safetensors")
+MODEL_NAME = "dinov3_vits16"                   
+REPO_SOURCE = "facebookresearch/dinov3" 
 
 class DINOv3FeatureExtractor:
-    def __init__(self, model_name='dinov3_vits16', device='cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(self, model_name='dinov3_vits16', weights_path=None, device='cuda' if torch.cuda.is_available() else 'cpu'):
         """
         Initializes the DINOv3 model.
         
         Args:
-            model_name (str): The DINOv3 model to load. 
-                              Common options: 'dinov3_vits16', 'dinov3_vitb16', 'dinov3_vitl16'
-            device (str): Computation device ('cuda' or 'cpu').
+            model_name (str): The DINOv3 model to load (e.g., 'dinov3_vits16').
+            weights_path (str, optional): Path to local .safetensors file. If None, downloads from Hub.
+            device (str): Computation device.
         """
         self.device = device
         self.patch_size = 16
+
             
-        print(f"Loading {model_name} on {self.device} with patch_size={self.patch_size}...")
+        print(f"Initializing {model_name} on {self.device}...")
+
         
-        try:
-            self.model = torch.hub.load('facebookresearch/dinov3', model_name).to(self.device)
-        except Exception as e:
-            print(f"Standard hub load failed ({e}). Trying with trust_repo=True...")
-            self.model = torch.hub.load('facebookresearch/dinov3', model_name, trust_repo=True).to(self.device)
+        if weights_path:
+            print(f"Loading local weights from: {weights_path}")
             
-        self.model.eval() # Set to evaluation mode (frozen features)
+            self.model= model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False)
+
+            # 2. Load Safetensors
+            state_dict = load_file(weights_path)
+
+            # 3. Clean Keys (Your integrated logic)
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                # Remove Hugging Face specific prefixes
+                k = k.replace("model.", "") 
+                k = k.replace("base_model.model.", "")
+                # Remove standard DINO prefixes
+                k = k.replace("teacher.", "")
+                k = k.replace("backbone.", "") 
+                new_state_dict[k] = v
+            
+            # 4. Inject weights
+            msg = self.model.load_state_dict(new_state_dict, strict=False)
+            print(f"Weights loaded. Status: {msg}")
+
+        else:
+            print(f"No local weights provided (or file not found). Downloading from Hub")
+            return
+
+        self.model.eval() # Set to evaluation mode
 
     def preprocess_image(self, image_path, target_size=None):
         """Loads and preprocesses an image from path."""
@@ -107,6 +134,7 @@ class DINOv3FineTuner:
     def __init__(
         self,
         model_name='dinov3_vits16',
+        weights_path=None,  # <--- Update: Accept weights_path here
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
         learning_rate=1e-5,
@@ -122,7 +150,12 @@ class DINOv3FineTuner:
             self.backbone = feature_extractor.model
             print(f"Using provided DINOv3FeatureExtractor")
         else:
-            self.feature_extractor = DINOv3FeatureExtractor(model_name=model_name, device=device)
+            # Pass weights_path down to the extractor
+            self.feature_extractor = DINOv3FeatureExtractor(
+                model_name=model_name, 
+                weights_path=weights_path, 
+                device=device
+            )
             self.backbone = self.feature_extractor.model
         
         self.patch_size = self.feature_extractor.patch_size
