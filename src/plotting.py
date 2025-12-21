@@ -1,7 +1,5 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-
 
 def plot_training_history(history, save_path=None):
     """
@@ -11,10 +9,6 @@ def plot_training_history(history, save_path=None):
         history: Dictionary with 'train_loss', 'val_loss', 'epoch_train_losses'
         save_path: Optional path to save the figure
     """
-    train_df = pd.read_csv("checkpoints/finetuned_dinov2/training_log_e5_b1.csv")
-    val_df   = pd.read_csv("metrics/val_metrics.csv")
-    print(train_df.head())
-    print(val_df.head())
 
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -22,8 +16,8 @@ def plot_training_history(history, save_path=None):
     # Plot 1: Epoch losses
     epochs = range(1, len(history['train_loss']) + 1)
     axes[0].plot(epochs, history['train_loss'], 'b-o', label='Train Loss', linewidth=2)
-    if history.get('val_loss'):
-        axes[0].plot(epochs, history['val_loss'], 'r-s', label='Val Loss', linewidth=2)
+    val_epochs = range(1, len(history['val_loss']) + 1)
+    axes[0].plot(val_epochs, history['val_loss'], 'r-s', label='Val Loss', linewidth=2)
     axes[0].set_xlabel('Epoch', fontsize=12)
     axes[0].set_ylabel('Loss', fontsize=12)
     axes[0].set_title('Loss per Epoch', fontsize=14)
@@ -47,9 +41,8 @@ def plot_training_history(history, save_path=None):
     
 
     # Plot 3: PCK (Validation)
-    # axes[2].plot(val_df["epoch"], val_df["pck"], "g-o", label="PCK")
-    axes[2].plot(val_df["epoch"], val_df["val_pck"], "g-o", label="PCK")
-
+    val_epochs = range(1, len(history['val_pck']) + 1)
+    axes[2].plot(val_epochs, history['val_pck'], "g-o", label="PCK")
     axes[2].set_title("PCK over Epochs")
     axes[2].set_xlabel("Epoch")
     axes[2].set_ylabel("PCK")
