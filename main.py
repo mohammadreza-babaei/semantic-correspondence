@@ -23,6 +23,8 @@ def main():
                                   help="Number of transformer blocks to unfreeze (from the end)")
     fine_tune_parser.add_argument("--lr", type=float, default=1e-3,
                                   help="Learning rate for training")
+    fine_tune_parser.add_argument("--fixed-lr", action="store_true",
+                                  help="Use fixed learning rate")
     fine_tune_parser.add_argument("--epochs", type=int, default=5,
                                   help="Number of training epochs")
     fine_tune_parser.add_argument("--batch-size", type=int, default=1,
@@ -82,6 +84,7 @@ def fine_tune(args):
         device=device,
         num_unfrozen_blocks=args.num_unfrozen_blocks,
         learning_rate=args.lr,
+        fixed_lr=args.fixed_lr,
     )
     
     # Run training

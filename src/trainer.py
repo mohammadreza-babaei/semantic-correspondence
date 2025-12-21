@@ -27,6 +27,7 @@ class Trainer():
             'epoch_train_losses': [],
             'learning_rates': []
         }
+        self.fixed_lr = kwargs.get('fixed_lr', False)
         self.scheduler = None
 
     def train_step(self, batch):
@@ -340,7 +341,7 @@ class Trainer():
                     self.model.optimizer.param_groups[0]['lr']
                 )
                 
-                if self.scheduler is not None:
+                if self.scheduler is not None and not self.fixed_lr:
                     self.scheduler.step()
                 
                 if (batch_idx + 1) % log_interval == 0:
@@ -385,7 +386,9 @@ class Trainer():
                     best_val_loss = val_loss
                     self.model.save_checkpoint(f"{save_path}/best_model.pt")
 
-                # Write to CSV - PSK
+                plot_training_history(self.history, save_path=f"{save_path}/training_curves_{epoch+1}.png")
+
+                # Write to CSV - PCK
                 with open(csv_path, 'a', newline='') as f:
                     writer = csv.writer(f)
 
