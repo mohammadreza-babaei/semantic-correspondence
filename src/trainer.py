@@ -265,8 +265,8 @@ class Trainer():
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size, 
-            shuffle=True,
-            num_workers=0,  # Set to 0 for debugging, increase for speed
+            shuffle=False,
+            num_workers=0, 
             collate_fn=self.model._collate_fn
         )
         

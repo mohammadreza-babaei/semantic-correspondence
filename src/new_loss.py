@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 
-# --- NEW HELPER FUNCTION (Add this to the top of the file) ---
+# --- NEW HELPER FUNCTION 
 def predict_keypoints(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=None, temperature=10.0):
     """
     Helper to predict keypoints (Soft-Argmax) without calculating loss.
