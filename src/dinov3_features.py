@@ -205,47 +205,66 @@ class DINOv3FineTuner:
     def extract_intermediate_features(self, image_tensor):
         """
         Extract output of FROZEN blocks (before unfrozen blocks).
+        
+        DINOv3 uses RoPE (Rotary Position Embeddings) which must be passed to each block.
         """
         with torch.no_grad():
-            # Run patch embedding
-            x = self.backbone.patch_embed(image_tensor)
-            # Ensure x is 3D: (B, N, C) where N = H*W
-            if x.ndim == 4:
-                # patch_embed outputs (B, H, W, C) -> flatten to (B, H*W, C)
-                x = x.flatten(1, 2)
+            # Step 1: Use DINOv3's prepare_tokens_with_masks for proper tokenization
+            # This handles patch embedding, CLS token, and storage tokens
+            x, seq_shape = self.backbone.prepare_tokens_with_masks(image_tensor)
             
-            # Add CLS token
-            cls_tokens = self.backbone.cls_token.expand(x.shape[0], -1, -1)
-            x = torch.cat((cls_tokens, x), dim=1)
+            # Step 2: Generate RoPE embeddings for this spatial shape
+            rope = self.backbone.rope_embed(H=seq_shape[0], W=seq_shape[1])
             
-            # Add position embeddings
-            x = x + self.backbone.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
-            
-            # Run through FROZEN blocks only
+            # Step 3: Run through FROZEN blocks only, passing rope to each
             for i, block in enumerate(self.backbone.blocks):
                 if i >= self.num_frozen_blocks:
                     break
-                x = block(x)
+                x = block(x, rope)
+            
+            # Store seq_shape for use in forward_unfrozen_blocks
+            self._last_seq_shape = seq_shape
             
             return x
     
     def forward_unfrozen_blocks(self, intermediate_features):
         """
         Run UNFROZEN blocks + norm with gradients.
+        
+        DINOv3 blocks require rope embeddings to be passed.
         """
         x = intermediate_features
         
-        # Run through UNFROZEN blocks
+        # Get seq_shape from cached value (set during extract_intermediate_features)
+        # or infer from token count
+        if hasattr(self, '_last_seq_shape'):
+            seq_shape = self._last_seq_shape
+        else:
+            # Fallback: infer from token count (N = n_storage_tokens + H*W)
+            B, N, C = x.shape
+            n_storage = self.backbone.n_storage_tokens
+            n_patches = N - n_storage
+            H = W = int(n_patches ** 0.5)
+            seq_shape = (H, W)
+        
+        # Generate RoPE embeddings (must be on same device as x)
+        rope = self.backbone.rope_embed(H=seq_shape[0], W=seq_shape[1])
+        
+        # Run through UNFROZEN blocks with rope
         for block in list(self.backbone.blocks)[-self.num_unfrozen_blocks:]:
-            x = block(x)
+            x = block(x, rope)
         
         # Apply final norm
         x = self.backbone.norm(x)
         
-        # Remove CLS token and reshape
-        patch_tokens = x[:, 1:]  # (B, N, C)
+        # Remove storage tokens (CLS + optional storage) to get patch tokens only
+        # DINOv3 has n_storage_tokens at the beginning + potentially a register token
+        n_storage = self.backbone.n_storage_tokens
+        H, W = seq_shape
+        # Take exactly H*W patch tokens (skip storage tokens and any register tokens)
+        patch_tokens = x[:, n_storage:n_storage + H*W]  # (B, H*W, C)
+        
         B, N, C = patch_tokens.shape
-        H = W = int(N ** 0.5)
         
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
         return F.normalize(feature_map, dim=1)
