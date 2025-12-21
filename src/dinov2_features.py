@@ -50,9 +50,8 @@ class DINOv2FeatureExtractor:
         """
         if isinstance(img, np.ndarray):
             img = Image.fromarray(img)
-        
-        # Resize logic: If target_size is provided, use it. 
-        # Otherwise, ensure dimensions are divisible by patch_size for ViT.
+         
+        #ensure dimensions are divisible by patch_size.
         w, h = img.size if target_size is None else target_size
         new_w = (w // self.patch_size) * self.patch_size
         new_h = (h // self.patch_size) * self.patch_size

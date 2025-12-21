@@ -5,6 +5,7 @@ from pathlib import Path
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
+from src.dinov3_features import DINOv3FineTuner
 from src.dinov2_features import DINOv2FeatureExtractor, DINOv2FineTuner
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
@@ -17,7 +18,7 @@ def main():
     
     fine_tune_parser = subparsers.add_parser("fine_tune", help="Train the model")
     fine_tune_parser.add_argument("--model-name", type=str, default="dinov2_vits14",
-                                  choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14'],
+                                  choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 'dinov3_vits16'],
                                   help="DINOv2 model variant to use")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
@@ -47,9 +48,9 @@ def main():
 
 
 def fine_tune(args):
-    """Fine-tune DINOv2 for semantic correspondence."""
+    """Fine-tune Model for semantic correspondence."""
     print("="*60)
-    print("DINOv2 Fine-Tuning for Semantic Correspondence")
+    print("Model Fine-Tuning for Semantic Correspondence")
     print("="*60)
     
     # Get dataset path
@@ -66,14 +67,27 @@ def fine_tune(args):
     print(f"  Val samples: {len(val_dataset)}")
     
     # Initialize fine-tuner
-    print(f"\nInitializing DINOv2 Fine-Tuner...")
+    print(f"\nInitializing Model Fine-Tuner...")
     print(f"  Model: {args.model_name}")
     print(f"  Unfrozen blocks: {args.num_unfrozen_blocks}")
     print(f"  Learning rate: {args.lr}")
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # model = Trainer(
+    #     model=DINOv2FineTuner(
+    #         model_name=args.model_name,
+    #         num_unfrozen_blocks=args.num_unfrozen_blocks,
+    #         device=device,
+    #         learning_rate=args.lr,
+    #     ),
+    #     device=device,
+    #     num_unfrozen_blocks=args.num_unfrozen_blocks,
+    #     learning_rate=args.lr,
+    # )
+
     model = Trainer(
-        model=DINOv2FineTuner(
+    model=DINOv3FineTuner(
             model_name=args.model_name,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
             device=device,
