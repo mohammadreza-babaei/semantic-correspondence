@@ -8,9 +8,11 @@ from pathlib import Path
 from transformers import SamModel, SamConfig
 
 
-# Standard image size for all feature extraction (divisible by patch_size=16)
-STANDARD_SIZE = 1024  # Multiple of 16 (16*64=1024), good balance between quality and speed
 
+# Standard image size for all feature extraction (divisible by patch_size=16)
+# Reduced from 1024 for speed/memory efficiency if needed. 
+# Default 1024 is native SAM resolution.
+STANDARD_SIZE = 512 
 
 class SAMFeatureExtractor:
     def __init__(self, model_name='facebook/sam-vit-base', device='cuda' if torch.cuda.is_available() else 'cpu'):
@@ -26,12 +28,20 @@ class SAMFeatureExtractor:
         """
         self.device = device
         self.patch_size = 16  # SAM uses a patch size of 16 for its encoder
+        self.standard_size = STANDARD_SIZE
         
         print(f"Loading {model_name} on {self.device}...")
         
         # We load the full SAM model but will only use the vision_encoder part
         self.model = SamModel.from_pretrained(model_name).to(self.device)
         self.model.eval()
+        
+        # Override image size in config to avoid ValueError in patch_embed
+        if self.standard_size != 1024:
+            print(f"Resizing SAM vision encoder config to {self.standard_size}x{self.standard_size}")
+            self.model.vision_encoder.patch_embed.image_size = (self.standard_size, self.standard_size)
+            if hasattr(self.model.config, "vision_config"):
+                self.model.config.vision_config.image_size = self.standard_size
 
     def preprocess_image(self, image_path, target_size=None):
         """
@@ -145,7 +155,9 @@ class SAMFineTuner:
         if feature_extractor is not None:
             self.feature_extractor = feature_extractor
             self.sam_model = feature_extractor.model
-            print(f"Using provided SAMFeatureExtractor")
+            # Ensure consistence
+            self.standard_size = feature_extractor.standard_size
+            print(f"Using provided SAMFeatureExtractor with size {self.standard_size}")
         else:
             self.feature_extractor = SAMFeatureExtractor(model_name=model_name, device=device)
             self.sam_model = self.feature_extractor.model
@@ -169,16 +181,10 @@ class SAMFineTuner:
         print(f"Total transformer blocks: {num_blocks}")
         print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
         
-        blocks_to_unfreeze = list(self.backbone.layers)[-num_unfrozen_blocks:]
+        blocks_to_unfreeze = self.backbone.layers[-num_unfrozen_blocks:]
         for block in blocks_to_unfreeze:
             for param in block.parameters():
                 param.requires_grad = True
-        
-        # Unfreeze the neck module (as per user request)
-        if hasattr(self.backbone, 'neck'):
-            for param in self.backbone.neck.parameters():
-                param.requires_grad = True
-            print("Unfreezing neck module...")
         
         # Count trainable parameters
         trainable_params = sum(p.numel() for p in self.sam_model.parameters() if p.requires_grad)
@@ -240,23 +246,24 @@ class SAMFineTuner:
         Returns:
             torch.Tensor: Feature map (B, C, H, W) - L2 normalized spatial features
         """
-        x = intermediate_features
+        # Ensure input is on the correct device
+        x = intermediate_features.to(self.device)
         
         # Run through UNFROZEN blocks (input is already in B, H, W, C format)
-        for layer in list(self.backbone.layers)[-self.num_unfrozen_blocks:]:
-            x = layer(x)
+        # Use slicing on ModuleList if possible, or iterate efficiently
+        start_idx = self.num_frozen_blocks
+        for i in range(start_idx, len(self.backbone.layers)):
+            x = self.backbone.layers[i](x)
         
         # Apply neck if present
         if hasattr(self.backbone, 'neck') and hasattr(self.backbone.neck, '0'):
             # x is (B, H, W, C), need to reshape to (B, C, H, W) for neck
-            B, H, W, C = x.shape
             x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
             
             # Apply neck (Conv2d layers)
             x = self.backbone.neck(x)
         else:
             # If no neck, just reshape from (B, H, W, C) to (B, C, H, W)
-            B, H, W, C = x.shape
             x = x.permute(0, 3, 1, 2)
         
         # L2 normalize features
@@ -328,8 +335,8 @@ class SAMFineTuner:
             img = Image.open(img_path).convert('RGB')
             orig_w, orig_h = img.size
             
-            # Preprocess at STANDARD_SIZE (1024x1024)
-            img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(STANDARD_SIZE, STANDARD_SIZE))
+            # Preprocess at standard_size
+            img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(self.standard_size, self.standard_size))
             
             # Extract INTERMEDIATE features (output of frozen blocks)
             intermediate = self.extract_intermediate_features(img_tensor)
