@@ -240,12 +240,16 @@ class DINOv3FineTuner:
         if hasattr(self, '_last_seq_shape'):
             seq_shape = self._last_seq_shape
         else:
-            # Fallback: infer from token count (N = n_storage_tokens + H*W)
-            B, N, C = x.shape
-            n_storage = self.backbone.n_storage_tokens
-            n_patches = N - n_storage
-            H = W = int(n_patches ** 0.5)
+            # Fallback: We verify against STANDARD_SIZE because we enforce it in extract_all_features
+            # This is safer than inferring from N which behaves unpredictably with CLS/Register tokens
+            H = W = self.standard_size // self.patch_size
             seq_shape = (H, W)
+            
+            # Verify we have enough tokens
+            n_patches = H * W
+            B, N, C = x.shape
+            if N < n_patches:
+                 raise ValueError(f"Not enough tokens! N={N}, Expected at least {n_patches} (H={H}, W={W})")
         
         # Generate RoPE embeddings (must be on same device as x)
         rope = self.backbone.rope_embed(H=seq_shape[0], W=seq_shape[1])
@@ -257,12 +261,10 @@ class DINOv3FineTuner:
         # Apply final norm
         x = self.backbone.norm(x)
         
-        # Remove storage tokens (CLS + optional storage) to get patch tokens only
-        # DINOv3 has n_storage_tokens at the beginning + potentially a register token
-        n_storage = self.backbone.n_storage_tokens
+        # Remove storage tokens (CLS + Registers) to get patch tokens only
+        # We assume patch tokens are always the LAST H*W tokens in ViT
         H, W = seq_shape
-        # Take exactly H*W patch tokens (skip storage tokens and any register tokens)
-        patch_tokens = x[:, n_storage:n_storage + H*W]  # (B, H*W, C)
+        patch_tokens = x[:, -H*W:]  # (B, H*W, C)
         
         B, N, C = patch_tokens.shape
         
