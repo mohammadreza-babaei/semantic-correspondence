@@ -103,7 +103,7 @@ class Trainer():
             src_kps_batch, trg_kps_batch, 
             src_img_size=(self.model.standard_size, self.model.standard_size),
             trg_img_size=(self.model.standard_size, self.model.standard_size),
-            temperature=10.0
+            temperature=0.1
         )
         
         # Backward pass (gradients flow through unfrozen blocks)
@@ -185,7 +185,7 @@ class Trainer():
                 src_kps_batch, trg_kps_batch, 
                 src_img_size=(self.model.standard_size, self.model.standard_size),
                 trg_img_size=(self.model.standard_size, self.model.standard_size),
-                temperature=10.0
+                temperature=0.1
             )
 
         # -------------------------------------------------------------------------
@@ -201,7 +201,7 @@ class Trainer():
                 feat1, feat2, 
                 src_kps_all_scaled,
                 src_img_size=(self.model.standard_size, self.model.standard_size),
-                temperature=10.0
+                temperature=0.1
             )
             
         # Denormalize predictions back to ORIGINAL image size for PCK evaluation
