@@ -2,7 +2,6 @@ import argparse
 import os
 import torch
 from pathlib import Path
-from tqdm import tqdm
 from torch.utils.data import DataLoader
 
 from src.dinov3_features import DINOv3FineTuner
@@ -43,6 +42,14 @@ def main():
                                   help="Path to custom model weights (.safetensors or .pth file)")
     fine_tune_parser.add_argument("--no-plot", action="store_true",
                                   help="Disable interactive plotting during training")
+    
+    # WandB arguments
+    fine_tune_parser.add_argument("--use-wandb", action="store_true",
+                                  help="Enable Weights & Biases logging")
+    fine_tune_parser.add_argument("--wandb-project", type=str, default="semantic_correspondence",
+                                  help="WandB project name")
+    fine_tune_parser.add_argument("--wandb-run-name", type=str, default=None,
+                                  help="WandB run name (optional)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
     
@@ -146,7 +153,10 @@ def fine_tune(args, model_type):
         log_interval=args.log_interval,
         save_path=args.save_path,
         plot_every_epoch=not args.no_plot,
-        max_iters_per_epoch=args.max_iters_per_epoch
+        max_iters_per_epoch=args.max_iters_per_epoch,
+        use_wandb=args.use_wandb,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run_name
     )
     
     # Plot final results

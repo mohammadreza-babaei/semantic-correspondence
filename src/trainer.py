@@ -9,6 +9,7 @@ import numpy as np
 from pathlib import Path
 import os
 import csv
+import wandb
 
 from src.new_loss import loss as the_new_loss, predict_keypoints
 from src.pck import compute_pck_from_batch
@@ -20,6 +21,7 @@ class Trainer():
     def __init__(self, **kwargs):
         self.model = kwargs.get('model')
         self.device = kwargs.get('device')
+        self.learning_rate = kwargs.get('learning_rate')
         self.history = {
             'train_loss': [],
             'val_loss': [],
@@ -255,6 +257,25 @@ class Trainer():
         plot_every_epoch = kwargs.get('plot_every_epoch', True)
         max_iters_per_epoch = kwargs.get('max_iters_per_epoch', None)
         
+        # WandB Setup
+        use_wandb = kwargs.get('use_wandb', False)
+        wandb_project = kwargs.get('wandb_project', 'semantic_correspondence')
+        wandb_run_name = kwargs.get('wandb_run_name', None)
+
+        if use_wandb:
+            wandb.init(
+                project=wandb_project,
+                name=wandb_run_name,
+                config={
+                    "model_name": self.model.model_name,
+                    "num_unfrozen_blocks": self.model.num_unfrozen_blocks,
+                    "learning_rate": self.learning_rate,
+                    "batch_size": batch_size,
+                    "epochs": epochs,
+                    "device": str(self.device)
+                }
+            )
+        
         # Always pre-extract features before training
         print("\n" + "="*60)
         print("Pre-extracting features...")
@@ -340,6 +361,13 @@ class Trainer():
                 self.history['learning_rates'].append(
                     self.model.optimizer.param_groups[0]['lr']
                 )
+
+                if use_wandb:
+                    wandb.log({
+                        "train/batch_loss": loss,
+                        "train/learning_rate": self.model.optimizer.param_groups[0]['lr'],
+                        "epoch": epoch
+                    })
                 
                 if self.scheduler is not None and not self.fixed_lr:
                     self.scheduler.step()
@@ -354,6 +382,12 @@ class Trainer():
             # Calculate epoch average
             train_loss = np.mean(epoch_losses)
             self.history['train_loss'].append(train_loss)
+            
+            if use_wandb:
+                wandb.log({
+                    "train/epoch_loss": train_loss,
+                    "epoch": epoch
+                })
             
             # Validation phase + PCK implemented
             val_loss = None
@@ -380,6 +414,13 @@ class Trainer():
 
                 self.history['val_loss'].append(val_loss)
                 self.history['val_pck'].append(val_pck)
+
+                if use_wandb:
+                    wandb.log({
+                        "val/loss": val_loss,
+                        "val/pck": val_pck,
+                        "epoch": epoch
+                    })
 
                 # Save best model
                 if val_loss < best_val_loss:
@@ -413,7 +454,12 @@ class Trainer():
                 print(f"  Val Loss:   {val_loss:.4f}")
             print(f"{'─'*40}\n")
             
+            print(f"{'─'*40}\n")
+            
             self.model.save_checkpoint(f"{save_path}/epoch_{epoch+1}.pt")
+        
+        if use_wandb:
+            wandb.finish()
         
         # --- FINAL PLOT ---
         print("Generating final training graph...")

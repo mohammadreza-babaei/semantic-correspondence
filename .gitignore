@@ -182,3 +182,4 @@ checkpoints/
 .vscode/
 
 metrics/
+wandb/
