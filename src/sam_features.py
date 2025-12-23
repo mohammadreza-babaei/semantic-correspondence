@@ -191,18 +191,7 @@ class SAMFineTuner:
         total_params = sum(p.numel() for p in self.sam_model.parameters())
         print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
         
-        # Optimizer for unfrozen parameters
-        trainable_backbone_params = [p for p in self.sam_model.parameters() if p.requires_grad and p.is_leaf]
-        self.optimizer = torch.optim.AdamW(
-            [
-                {'params': trainable_backbone_params, 'lr': learning_rate},
-            ],
-            weight_decay=0.01
-        )
-        
-        # The history and scheduler are managed by the Trainer class
-        self.history = {}
-        self.scheduler = None
+        self.trainable_params = [p for p in self.sam_model.parameters() if p.requires_grad and p.is_leaf]
         
         # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
         self.features_cache = {}
@@ -371,13 +360,9 @@ class SAMFineTuner:
         checkpoint = {
             'backbone_state_dict': self.backbone.state_dict(),
             'sam_model_state_dict': self.sam_model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'history': self.history,
             'embed_dim': self.embed_dim,
             'patch_size': self.patch_size
         }
-        if self.scheduler is not None:
-            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         torch.save(checkpoint, path)
         print(f"Checkpoint saved: {path}")
     
@@ -385,8 +370,4 @@ class SAMFineTuner:
         """Load model checkpoint."""
         checkpoint = torch.load(path, map_location=self.device)
         self.sam_model.load_state_dict(checkpoint['sam_model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.history = checkpoint['history']
-        if 'scheduler_state_dict' in checkpoint and self.scheduler is not None:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f"Checkpoint loaded: {path}")

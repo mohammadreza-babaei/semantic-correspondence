@@ -189,18 +189,8 @@ class DINOv3FineTuner:
         total_params = sum(p.numel() for p in self.backbone.parameters())
         print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
         
-        # Optimizer
-        trainable_backbone_params = [p for p in self.backbone.parameters() if p.requires_grad and p.is_leaf]
-        self.optimizer = torch.optim.AdamW(
-            [{'params': trainable_backbone_params, 'lr': learning_rate}],
-            weight_decay=0.01
-        )
+        self.trainable_params = [p for p in self.backbone.parameters() if p.requires_grad and p.is_leaf]
         
-        self.scheduler = None
-        self.history = {
-            'train_loss': [], 'val_loss': [], 
-            'epoch_train_losses': [], 'learning_rates': []
-        }
     
     def extract_intermediate_features(self, image_tensor):
         """
@@ -330,20 +320,13 @@ class DINOv3FineTuner:
     def save_checkpoint(self, path):
         checkpoint = {
             'backbone_state_dict': self.backbone.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'history': self.history,
             'embed_dim': self.embed_dim,
             'patch_size': self.patch_size
         }
-        if self.scheduler: checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         torch.save(checkpoint, path)
         print(f"Checkpoint saved: {path}")
     
     def load_checkpoint(self, path):
         checkpoint = torch.load(path, map_location=self.device)
         self.backbone.load_state_dict(checkpoint['backbone_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.history = checkpoint['history']
-        if 'scheduler_state_dict' in checkpoint and self.scheduler:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f"Checkpoint loaded: {path}")

@@ -41,7 +41,7 @@ class Trainer():
         Args:
             batch: Dictionary containing 'src_name', 'trg_name', 'src_kps', 'trg_kps'
         """
-        self.model.optimizer.zero_grad()
+        self.optimizer.zero_grad()
         
         # Get image names and keypoints
         src_name = batch['src_name']
@@ -109,7 +109,7 @@ class Trainer():
         # Backward pass (gradients flow through unfrozen blocks)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.backbone.parameters(), max_norm=1.0)
-        self.model.optimizer.step()
+        self.optimizer.step()
         
         return loss.item()
     
@@ -312,9 +312,16 @@ class Trainer():
 
         print(f"Scheduler configured for {total_steps} total steps (Cosine Decay).")
 
+
+        self.optimizer = torch.optim.AdamW(
+            self.model.trainable_params,
+            lr=self.learning_rate,
+            weight_decay=0.01
+        )
+
         # 2. Initialize scheduler with the correct total steps
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.model.optimizer, 
+            self.optimizer, 
             T_max=total_steps
         )
         
@@ -371,13 +378,13 @@ class Trainer():
                 epoch_losses.append(loss)
                 self.history['epoch_train_losses'].append(loss)
                 self.history['learning_rates'].append(
-                    self.model.optimizer.param_groups[0]['lr']
+                    self.optimizer.param_groups[0]['lr']
                 )
 
                 if use_wandb:
                     wandb.log({
                         "train/batch_loss": loss,
-                        "train/learning_rate": self.model.optimizer.param_groups[0]['lr'],
+                        "train/learning_rate": self.optimizer.param_groups[0]['lr'],
                         "epoch": epoch
                     })
                 
@@ -389,7 +396,7 @@ class Trainer():
                     print(f"Epoch [{epoch+1}/{epochs}] "
                             f"Batch [{batch_idx+1}/{max_iters}] "
                             f"Loss: {avg_loss:.4f} "
-                            f"LR: {self.model.optimizer.param_groups[0]['lr']:.2e}")
+                            f"LR: {self.optimizer.param_groups[0]['lr']:.2e}")
             
             # Calculate epoch average
             train_loss = np.mean(epoch_losses)
@@ -455,7 +462,7 @@ class Trainer():
             # write to CSV - TRAIN
             with open(csv_file_path, 'a', newline='') as f:
                 writer = csv.writer(f)
-                current_lr = self.model.optimizer.param_groups[0]['lr']
+                current_lr = self.optimizer.param_groups[0]['lr']
                 val_str = f"{val_loss:.6f}" if val_loss is not None else ""
                 writer.writerow([epoch + 1, f"{train_loss:.6f}", val_str, f"{current_lr:.2e}"])
 

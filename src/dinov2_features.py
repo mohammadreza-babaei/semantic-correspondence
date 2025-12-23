@@ -222,26 +222,8 @@ class DINOv2FineTuner:
         print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
         
         
-        # Optimizer for unfrozen backbone parameters + temperature parameters
         # Filter to ensure we only get leaf tensors that require grad
-        trainable_backbone_params = [p for p in self.backbone.parameters() if p.requires_grad and p.is_leaf]
-        self.optimizer = torch.optim.AdamW(
-            [
-                {'params': trainable_backbone_params, 'lr': learning_rate},
-            ],
-            weight_decay=0.01
-        )
-        
-        # Learning rate scheduler
-        self.scheduler = None
-        
-        # Training history
-        self.history = {
-            'train_loss': [],
-            'val_loss': [],
-            'epoch_train_losses': [],
-            'learning_rates': []
-        }
+        self.trainable_params = [p for p in self.backbone.parameters() if p.requires_grad and p.is_leaf]
         
         # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
         # These are the inputs to the unfrozen blocks
@@ -412,13 +394,9 @@ class DINOv2FineTuner:
         """Save model checkpoint."""
         checkpoint = {
             'backbone_state_dict': self.backbone.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'history': self.history,
             'embed_dim': self.embed_dim,
             'patch_size': self.patch_size
         }
-        if self.scheduler is not None:
-            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         torch.save(checkpoint, path)
         print(f"Checkpoint saved: {path}")
     
@@ -426,8 +404,4 @@ class DINOv2FineTuner:
         """Load model checkpoint."""
         checkpoint = torch.load(path, map_location=self.device)
         self.backbone.load_state_dict(checkpoint['backbone_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.history = checkpoint['history']
-        if 'scheduler_state_dict' in checkpoint and self.scheduler is not None:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f"Checkpoint loaded: {path}")
