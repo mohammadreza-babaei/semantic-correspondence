@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 import os
-from safetensors.torch import load_file 
+
 # Standard image size for DINOv3 feature extraction. 
 # 528 = 16 * 33 (closest multiple of 16 to the 518 used in DINOv2)
 STANDARD_SIZE = 528 
@@ -24,7 +24,7 @@ class DINOv3FeatureExtractor:
         
         Args:
             model_name (str): The DINOv3 model to load (e.g., 'dinov3_vits16').
-            weights_path (str, optional): Path to local .safetensors file. If None, downloads from Hub.
+            weights_path (str, optional): Path to local .pth file. If None, downloads from Hub.
             device (str): Computation device.
         """
         self.device = device
@@ -39,8 +39,8 @@ class DINOv3FeatureExtractor:
             
             self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
 
-            # 2. Load Safetensors
-            state_dict = load_file(weights_path)
+            # 2. Load Weights (.pth)
+            state_dict = torch.load(weights_path, map_location='cpu')
 
             # 3. Clean Keys (Your integrated logic)
             new_state_dict = {}
