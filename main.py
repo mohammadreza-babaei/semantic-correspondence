@@ -84,8 +84,7 @@ def fine_tune(args, model_type):
     model_display_name = model_type.upper()
     print("="*60)
     print(f"{model_display_name} Fine-Tuning for Semantic Correspondence")
-    print("="*60)
-    
+    print("="*60)    
     # Get dataset path
     dataset_path = args.dataset_path or os.environ.get('SPAIR_URL', './data')
     if not Path(dataset_path).exists():

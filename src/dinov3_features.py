@@ -42,7 +42,7 @@ class DINOv3FeatureExtractor:
             # 2. Load Weights (.pth)
             state_dict = torch.load(weights_path, map_location='cpu')
 
-            # 3. Clean Keys (Your integrated logic)
+            # 3. Clean Keys
             new_state_dict = {}
             for k, v in state_dict.items():
                 # Remove Hugging Face specific prefixes
@@ -134,7 +134,7 @@ class DINOv3FineTuner:
     def __init__(
         self,
         model_name='dinov3_vits16',
-        weights_path=None,  # <--- Update: Accept weights_path here
+        weights_path=None,  # Accept weights_path here
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
         learning_rate=1e-5,
