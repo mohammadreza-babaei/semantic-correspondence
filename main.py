@@ -46,6 +46,8 @@ def main():
     # WandB arguments
     fine_tune_parser.add_argument("--use-wandb", action="store_true",
                                   help="Enable Weights & Biases logging")
+    fine_tune_parser.add_argument("--accumulation-steps", type=int, default=1,
+                                  help="Number of steps to accumulate gradients before updating optimizer")
     fine_tune_parser.add_argument("--wandb-project", type=str, default="semantic_correspondence",
                                   help="WandB project name")
     fine_tune_parser.add_argument("--wandb-run-name", type=str, default=None,
@@ -152,7 +154,8 @@ def fine_tune(args, model_type):
         max_iters_per_epoch=args.max_iters_per_epoch,
         use_wandb=args.use_wandb,
         wandb_project=args.wandb_project,
-        wandb_run_name=args.wandb_run_name
+        wandb_run_name=args.wandb_run_name,
+        accumulation_steps=args.accumulation_steps
     )
     
     # Plot final results

@@ -32,7 +32,7 @@ class Trainer():
         self.fixed_lr = kwargs.get('fixed_lr', False)
         self.scheduler = None
 
-    def train_step(self, batch):
+    def train_step(self, batch, accumulation_steps=1):
         """Single training step using cached intermediate features.
         
         Loads intermediate features (output of frozen blocks) and runs them through
@@ -40,8 +40,8 @@ class Trainer():
         
         Args:
             batch: Dictionary containing 'src_name', 'trg_name', 'src_kps', 'trg_kps'
+            accumulation_steps: Number of steps to accumulate gradients over
         """
-        self.optimizer.zero_grad()
         
         # Get image names and keypoints
         src_name = batch['src_name']
@@ -107,9 +107,12 @@ class Trainer():
         )
         
         # Backward pass (gradients flow through unfrozen blocks)
-        loss.backward()
+        # Scale loss for gradient accumulation
+        loss_scaled = loss / accumulation_steps
+        loss_scaled.backward()
+        
+        # Gradient clipping remains here (gradients are accumulated)
         torch.nn.utils.clip_grad_norm_(self.model.backbone.parameters(), max_norm=1.0)
-        self.optimizer.step()
         
         return loss.item()
     
@@ -256,6 +259,7 @@ class Trainer():
         save_path = kwargs.get('save_path')
         plot_every_epoch = kwargs.get('plot_every_epoch', True)
         max_iters_per_epoch = kwargs.get('max_iters_per_epoch', None)
+        accumulation_steps = kwargs.get('accumulation_steps', 1)
         
         # WandB Setup
         use_wandb = kwargs.get('use_wandb', False)
@@ -286,7 +290,7 @@ class Trainer():
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size, 
-            shuffle=True,
+            shuffle=False,
             num_workers=0, 
             collate_fn=self.model._collate_fn
         )
@@ -308,7 +312,7 @@ class Trainer():
         else:
             steps_per_epoch = len(train_loader)
 
-        total_steps = epochs * steps_per_epoch
+        total_steps = epochs * steps_per_epoch // accumulation_steps
 
         print(f"Scheduler configured for {total_steps} total steps (Cosine Decay).")
 
@@ -357,6 +361,7 @@ class Trainer():
         print(f"Training samples: {len(train_dataset)}")
         print(f"Validation samples: {len(val_dataset) if val_dataset else 0}")
         print(f"Device: {self.device}")
+        print(f"Accumulation steps: {accumulation_steps}")
         print(f"Cached images: {len(self.model.features_cache)}")
         print(f"{'='*60}\n")
         
@@ -373,13 +378,23 @@ class Trainer():
             for batch_idx, batch in enumerate(train_loader):
                 if batch_idx >= max_iters:
                     break
-                    
-                loss = self.train_step(batch)
+                
+                # First batch of epoch (or after previous update), zero gradients
+                if (batch_idx % accumulation_steps == 0):
+                    self.optimizer.zero_grad()
+
+                loss = self.train_step(batch, accumulation_steps=accumulation_steps)
                 epoch_losses.append(loss)
                 self.history['epoch_train_losses'].append(loss)
                 self.history['learning_rates'].append(
                     self.optimizer.param_groups[0]['lr']
                 )
+
+                # Step optimizer every accumulation_steps
+                if (batch_idx + 1) % accumulation_steps == 0:
+                    self.optimizer.step()
+                    if self.scheduler is not None and not self.fixed_lr:
+                        self.scheduler.step()
 
                 if use_wandb:
                     wandb.log({
@@ -387,9 +402,6 @@ class Trainer():
                         "train/learning_rate": self.optimizer.param_groups[0]['lr'],
                         "epoch": epoch
                     })
-                
-                if self.scheduler is not None and not self.fixed_lr:
-                    self.scheduler.step()
                 
                 if (batch_idx + 1) % log_interval == 0:
                     avg_loss = np.mean(epoch_losses[-log_interval:])
