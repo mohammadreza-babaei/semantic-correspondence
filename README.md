@@ -21,13 +21,14 @@ The script is run via `main.py` using the `fine_tune` subcommand.
 
 ```bash
 python main.py fine_tune \
-  --model-name dinov3_vits16 dinov2_vits14 facebook/sam-vit-base \
-  --weights-path checkpoints/dino_weights.pth \
+  --model-name [model name] \
+  --weights-path checkpoints/dino_weights.pth  \ 
   --dataset-path /path/to/SPair-71k \
-  --epochs 10
+  --epochs [num] \
+  --max-iters-per-epoch [num] \
 ```
 
-* `--weights-path`: Path to the local file you downloaded.
+* `--weights-path`: Path to the local file you downloaded. (only for Dinov3)
 
 ### 2. Using Weights & Biases (WandB)
 
