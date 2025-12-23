@@ -110,8 +110,7 @@ def fine_tune(args, model_type):
         fine_tuner = DINOv2FineTuner(
             model_name=args.model_name,
             device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            learning_rate=args.lr,
+            num_unfrozen_blocks=args.num_unfrozen_blocks
         )
         if args.weights_path:
              print("Warning: Custom weights path provided but not supported for DINOv2 yet.")
@@ -121,15 +120,13 @@ def fine_tune(args, model_type):
             model_name=args.model_name,
             weights_path=args.weights_path,
             device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            learning_rate=args.lr,
+            num_unfrozen_blocks=args.num_unfrozen_blocks
         )
     elif model_type == 'sam':
         fine_tuner = SAMFineTuner(
             model_name=args.model_name,
             device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            learning_rate=args.lr,
+            num_unfrozen_blocks=args.num_unfrozen_blocks
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")

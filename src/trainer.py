@@ -189,7 +189,7 @@ class Trainer():
             )
 
         # -------------------------------------------------------------------------
-        # 4. CALCULATE PCK (NEW ADDITION)
+        # 4. CALCULATE PCK
         # -------------------------------------------------------------------------
         # We need to predict ALL keypoints (even invisible ones) to match the batch shape
         # Input: The SCALED keypoints (all N of them)
@@ -302,8 +302,20 @@ class Trainer():
             )
         
         # Setup scheduler
+        # 1. Calculate the number of steps per epoch
+        if max_iters_per_epoch is not None:
+            steps_per_epoch = min(max_iters_per_epoch, len(train_loader))
+        else:
+            steps_per_epoch = len(train_loader)
+
+        total_steps = epochs * steps_per_epoch
+
+        print(f"Scheduler configured for {total_steps} total steps (Cosine Decay).")
+
+        # 2. Initialize scheduler with the correct total steps
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.model.optimizer, T_max=epochs * len(train_loader)
+            self.model.optimizer, 
+            T_max=total_steps
         )
         
         # Create output directory
