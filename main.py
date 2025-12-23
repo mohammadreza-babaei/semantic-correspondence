@@ -1,5 +1,6 @@
 import argparse
 import os
+import csv
 import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
@@ -9,6 +10,8 @@ from src.dinov2_features import DINOv2FeatureExtractor, DINOv2FineTuner
 from src.sam_features import SAMFeatureExtractor, SAMFineTuner
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
+from src.pck import compute_raw_distances
+
 
 def main():
     parser = argparse.ArgumentParser(description="Semantic Correspondence CLI")
@@ -52,6 +55,16 @@ def main():
                                   help="WandB run name (optional)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
+
+    # We duplicate these args because 'eval' needs to know the architecture to load
+    eval_parser.add_argument("--model-name", type=str, required=True,
+                             help="Model variant to evaluate (must match the checkpoint)")
+    eval_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
+                             help="Must match the training configuration")
+    eval_parser.add_argument("--save-path", type=str, default=None,
+                             help="Folder containing 'best_model.pt'")
+    eval_parser.add_argument("--weights-path", type=str, default=None,
+                             help="Explicit path to .pt file (overrides save-path)")
     
     args = parser.parse_args()
 
@@ -76,7 +89,7 @@ def main():
     if args.command == "fine_tune":
         fine_tune(args, model_type)
     elif args.command == "eval":
-        evaluate()
+        evaluate(args)
 
 
 def fine_tune(args, model_type):
@@ -166,8 +179,147 @@ def fine_tune(args, model_type):
     print("="*60)
     
 
-def evaluate():
-    print("Evaluation logic goes here.")
+def evaluate(args):
+    """
+    Standalone evaluation function.
+    """
+    if args is None:
+        print("Error: Args must be passed to evaluate()")
+        return
+
+    print("="*60)
+    print("STARTING EVALUATION ON TEST SET")
+    print("="*60)
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # 1. Load Dataset
+    dataset_path = args.dataset_path or os.environ.get('SPAIR_URL', './data')
+    if not Path(dataset_path).exists():
+        raise FileNotFoundError(f"Dataset path not found: {dataset_path}")
+        
+    print(f"Loading Test Dataset from: {dataset_path}")
+    test_dataset = SPair71kPairs(root=dataset_path, split='test')
+    print(f"Test samples: {len(test_dataset)}")
+
+    # 2. Initialize Model
+    print(f"Initializing {args.model_name} architecture...")
+    if "dinov2" in args.model_name:
+        fine_tuner = DINOv2FineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+    elif "dinov3" in args.model_name:
+        fine_tuner = DINOv3FineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+    elif "sam" in args.model_name:
+        fine_tuner = SAMFineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+    else:
+        raise ValueError(f"Unknown model type for: {args.model_name}")
+
+    # 3. Load Weights
+    if args.weights_path:
+        checkpoint_path = args.weights_path
+    else:
+        checkpoint_path = f"{args.save_path}/best_model.pt"
+    
+    print(f"Loading checkpoint: {checkpoint_path}")
+    if not os.path.exists(checkpoint_path):
+        print(f"Warning: Checkpoint not found at {checkpoint_path}. Random weights will be used.")
+    else:
+        fine_tuner.load_checkpoint(checkpoint_path)
+
+    # 4. Trainer Wrapper
+    trainer = Trainer(model=fine_tuner, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+    
+    print("\nPre-extracting features for Test Set...")
+    trainer.model.extract_all_features(test_dataset)
+    
+    # 5. Test Loader
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=1, 
+        shuffle=False, 
+        num_workers=0, 
+        collate_fn=trainer.model._collate_fn
+    )
+
+    # 6. Evaluation Loop
+    os.makedirs("metrics", exist_ok=True)
+    results_file = f"metrics/test_raw_detailed_{args.model_name}.csv"
+    
+    print(f"\nEvaluating on {len(test_loader)} pairs...")
+    print(f"Saving raw keypoint data to: {results_file}")
+    
+    trainer.model.backbone.eval()
+    
+    with open(results_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['pair_idx', 'src_img', 'trg_img', 'category', 'kps_idx', 
+                         'pixel_error', 'bbox_threshold', 'is_correct_01', 'is_visible'])
+        
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(test_loader):
+                # A. Get Predictions
+                _, pred_kps = trainer.val_step(batch)
+                
+                # B. Get Ground Truth
+                gt_kps = batch['trg_kps']
+                bbox = batch['trg_bndbox']
+                
+                # C. Compute Raw Distances
+                dists, bbox_sizes = compute_raw_distances(pred_kps, gt_kps, bbox)
+                
+                # --- FIX: Handle Dimensions for Batch Size 1 ---
+                # If dists is 1D (N,), it means batch dimension was stripped. We add it back.
+                if dists.ndim == 1:
+                    dists = dists.unsqueeze(0)        # (N,) -> (1, N)
+                    if isinstance(bbox_sizes, torch.Tensor):
+                        bbox_sizes = bbox_sizes.unsqueeze(0) # scalar -> (1,)
+                    else:
+                        bbox_sizes = np.array([bbox_sizes])
+                # -----------------------------------------------
+
+                # D. Log to CSV
+                batch_n = dists.shape[0]
+                num_kps = dists.shape[1]
+                alpha = 0.1
+                
+                for i in range(batch_n):
+                    # Robustly get metadata (handle strings vs lists)
+                    src_name = batch['src_name'] if isinstance(batch['src_name'], str) else batch['src_name'][i]
+                    trg_name = batch['trg_name'] if isinstance(batch['trg_name'], str) else batch['trg_name'][i]
+                    category = batch['category'] if isinstance(batch['category'], str) else batch['category'][i]
+                    
+                    # Handle bbox_size being tensor or float
+                    current_bbox_size = bbox_sizes[i].item() if isinstance(bbox_sizes, torch.Tensor) else bbox_sizes[i]
+                    current_threshold = alpha * current_bbox_size
+                    
+                    for k in range(num_kps):
+                        err = dists[i, k].item()
+                        
+                        # Handle GT shape: (1, N, 2) or (N, 2)
+                        if gt_kps.ndim == 3:
+                            curr_gt = gt_kps[i, k]
+                        else:
+                            curr_gt = gt_kps[k]
+
+                        is_visible = (curr_gt[0] > 0) and (curr_gt[1] > 0)
+                        is_correct_01 = (err <= current_threshold) and is_visible
+                        
+                        if is_visible:
+                            writer.writerow([
+                                batch_idx, src_name, trg_name, category,
+                                k, f"{err:.4f}", f"{current_threshold:.4f}", 
+                                int(is_correct_01), int(is_visible)
+                            ])
+                
+                if (batch_idx + 1) % 50 == 0:
+                    print(f"Processed {batch_idx + 1} / {len(test_loader)} pairs")
+
+    print("\n" + "="*60)
+    print("Evaluation Complete!")
+    print(f"Raw data saved to: {results_file}")
+    print("="*60)
+
+
+
 
 if __name__ == "__main__":
     main()

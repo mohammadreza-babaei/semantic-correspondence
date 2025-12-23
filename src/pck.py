@@ -119,3 +119,26 @@ def compute_pck_from_batch(batch, pred_kps, alpha=0.1):
     mask = (gt_kps[..., 0] > 0) & (gt_kps[..., 1] > 0)
     
     return calculate_pck(pred_kps, gt_kps, bbox, alpha, mask)
+
+
+def compute_raw_distances(pred_kps, gt_kps, bbox):
+    """
+    Returns raw Euclidean distances and the threshold size for each sample.
+    
+    Args:
+        pred_kps: (B, N, 2)
+        gt_kps: (B, N, 2)
+        bbox: (B, 4)
+        
+    Returns:
+        dist: (B, N) - Distance in pixels
+        bbox_size: (B,) - Max bbox dimension in pixels
+    """
+    if not isinstance(pred_kps, torch.Tensor): pred_kps = torch.tensor(pred_kps)
+    if not isinstance(gt_kps, torch.Tensor): gt_kps = torch.tensor(gt_kps)
+    if not isinstance(bbox, torch.Tensor): bbox = torch.tensor(bbox)
+        
+    dist = torch.norm(pred_kps - gt_kps, dim=-1) # (B, N)
+    bbox_size = get_bbox_size(bbox)              # (B,)
+    
+    return dist, bbox_size
