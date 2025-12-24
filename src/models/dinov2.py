@@ -13,7 +13,7 @@ import os
 # Standard image size for all feature extraction (divisible by patch_size=14)
 STANDARD_SIZE = 518 # Multiple of 14 (14*37=518), used in the DINOv2 paper
 
-class DINOv2FineTuner:
+class DINOv2Adapter:
     def __init__(
         self,
         model_name='dinov2_vits14',
@@ -37,17 +37,6 @@ class DINOv2FineTuner:
         self.model = torch.hub.load('facebookresearch/dinov2', model_name).to(self.device)
         self.model.eval() # Set to evaluation mode (frozen features)
 
-        """
-        Initialize the fine-tuner.
-        
-        Args:
-            model_name: DINOv2 model variant to use
-            device: Device for computation
-            num_unfrozen_blocks: Number of transformer blocks to unfreeze from the end
-            learning_rate: Learning rate for training
-            feature_extractor: Optional pre-initialized DINOv2FeatureExtractor. If None,
-                               a new one will be created.
-        """
         self.device = device
         self.model_name = model_name
         
@@ -122,28 +111,6 @@ class DINOv2FineTuner:
         
         return resize_transform(img).unsqueeze(0).to(self.device)
 
-    def fine_tune(self, checkpoint_path='checkpoints/dinov2_features/dinov2_vits14_features.pt'):
-        """
-        Loads pretrained features from a checkpoint file.
-        
-        Args:
-            checkpoint_path (str): Path to the checkpoint file containing pretrained features.
-        
-        Returns:
-            dict: Dictionary containing the loaded features with image identifiers as keys.
-        """
-        print(f"Loading features from {checkpoint_path}...")
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
-        if isinstance(checkpoint, dict):
-            print(f"Loaded {len(checkpoint) - 1 if 'device' in checkpoint else len(checkpoint)} feature sets from checkpoint.")
-            # Remove 'device' key if present since it's metadata
-            if 'device' in checkpoint:
-                del checkpoint['device']
-            return checkpoint
-        else:
-            raise ValueError("Checkpoint format not recognized. Expected a dictionary.")
-
     def extract_intermediate_features(self, image_tensor):
         """
         Extract INTERMEDIATE features - output of frozen blocks, before unfrozen blocks.
@@ -208,94 +175,6 @@ class DINOv2FineTuner:
         feature_map = F.normalize(feature_map, dim=1)
         
         return feature_map
-    
-    def extract_all_features(self, dataset, show_progress=True):
-        """
-        Pre-extract INTERMEDIATE features for all images at STANDARD_SIZE (518x518).
-        
-        Intermediate features are the output of frozen blocks (before unfrozen blocks).
-        During training, only unfrozen blocks are computed with gradients.
-        
-        Args:
-            dataset: SPair71kPairs dataset (any split, will extract from all JPEGImages)
-            show_progress: Whether to show progress bar
-            
-        Returns:
-            dict: Dictionary mapping image names to intermediate feature info
-        """
-        from tqdm import tqdm
-        
-        # Create cache directory and file path
-        # Include num_frozen_blocks in filename since intermediate features depend on it
-        cache_dir = Path('checkpoints') / 'feature_cache'
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = cache_dir / f"{self.model_name}_intermediate_{self.num_frozen_blocks}frozen.pt"
-        
-        # Try to load all features from disk cache first
-        if cache_file.exists():
-            try:
-                print(f"Loading intermediate features from {cache_file}...")
-                self.features_cache = torch.load(cache_file, map_location='cpu')
-                print(f"Loaded {len(self.features_cache)} cached intermediate features from disk")
-                print(f"Features stored in RAM (CPU memory)")
-                return self.features_cache
-            except Exception as e:
-                print(f"Warning: Failed to load cache file: {e}")
-                print("Will re-extract features...")
-                self.features_cache = {}
-        
-        # Collect ALL unique images from the JPEGImages directory (all splits)
-        print("Scanning all images in JPEGImages directory...")
-        jpeg_dir = dataset.root / 'JPEGImages'
-        unique_images = set()
-        
-        # Walk through all category subdirectories
-        for category_dir in jpeg_dir.iterdir():
-            if category_dir.is_dir():
-                category = category_dir.name
-                for img_file in category_dir.glob('*.jpg'):
-                    img_name = f"{category}/{img_file.stem}"
-                    unique_images.add(img_name)
-        
-        print(f"Found {len(unique_images)} unique images across all splits")
-        print(f"Extracting intermediate features at {STANDARD_SIZE}x{STANDARD_SIZE}...")
-        
-        # Extract features for each unique image
-        iterator = tqdm(unique_images, desc="Extracting intermediate features") if show_progress else unique_images
-        
-        for img_name in iterator:
-            if img_name in self.features_cache:
-                continue
-            
-            # Get image path
-            img_path = dataset.root / 'JPEGImages' / f'{img_name}.jpg'
-            
-            # Load image and get original size
-            img = Image.open(img_path).convert('RGB')
-            orig_w, orig_h = img.size
-            
-            # Preprocess at STANDARD_SIZE (518x518)
-            img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(STANDARD_SIZE, STANDARD_SIZE))
-            
-            # Extract INTERMEDIATE features (output of frozen blocks)
-            intermediate = self.extract_intermediate_features(img_tensor)
-            
-            # Store intermediate features in CPU memory (RAM) to save VRAM
-            self.features_cache[img_name] = {
-                'intermediate': intermediate.cpu(),  # Move to CPU: (1, N+1, C) including CLS token
-                'orig_size': (orig_w, orig_h),
-            }
-        
-        # Save all features to disk in a single file
-        try:
-            print(f"Saving {len(self.features_cache)} intermediate features to {cache_file}...")
-            torch.save(self.features_cache, cache_file)
-            print("Features saved successfully")
-        except Exception as e:
-            print(f"Warning: Failed to save cache file: {e}")
-        
-        print(f"Cached intermediate features for {len(self.features_cache)} images")
-        return self.features_cache
     
     def _collate_fn(self, batch):
         """Custom collate function for SPair dataset."""

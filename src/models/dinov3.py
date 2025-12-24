@@ -17,7 +17,7 @@ WEIGHTS_PATH = os.path.join(script_dir, "model.safetensors")
 MODEL_NAME = "dinov3_vits16"                   
 REPO_SOURCE = "facebookresearch/dinov3" 
 
-class DINOv3FineTuner:
+class DINOv3Adapter:
     def __init__(
         self,
         model_name='dinov3_vits16',
@@ -197,59 +197,6 @@ class DINOv3FineTuner:
         
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
         return F.normalize(feature_map, dim=1)
-    
-    def extract_all_features(self, dataset, show_progress=True):
-        """
-        Pre-extract INTERMEDIATE features for all images at STANDARD_SIZE (528x528).
-        """
-        from tqdm import tqdm
-        
-        cache_dir = Path('checkpoints') / 'feature_cache'
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = cache_dir / f"{self.model_name}_intermediate_{self.num_frozen_blocks}frozen_s{STANDARD_SIZE}.pt"
-        
-        if cache_file.exists():
-            try:
-                print(f"Loading intermediate features from {cache_file}...")
-                self.features_cache = torch.load(cache_file, map_location='cpu')
-                print(f"Loaded {len(self.features_cache)} cached features.")
-                return self.features_cache
-            except Exception as e:
-                print(f"Warning: Failed to load cache: {e}. Re-extracting...")
-        
-        print("Scanning images...")
-        jpeg_dir = dataset.root / 'JPEGImages'
-        unique_images = set()
-        
-        for category_dir in jpeg_dir.iterdir():
-            if category_dir.is_dir():
-                for img_file in category_dir.glob('*.jpg'):
-                    unique_images.add(f"{category_dir.name}/{img_file.stem}")
-        
-        print(f"Extracting features at {STANDARD_SIZE}x{STANDARD_SIZE} for {len(unique_images)} images...")
-        iterator = tqdm(unique_images) if show_progress else unique_images
-        
-        for img_name in iterator:
-            if img_name in self.features_cache: continue
-            
-            img_path = dataset.root / 'JPEGImages' / f'{img_name}.jpg'
-            img = Image.open(img_path).convert('RGB')
-            orig_w, orig_h = img.size
-            
-            # Preprocess at STANDARD_SIZE (528)
-            img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(STANDARD_SIZE, STANDARD_SIZE))
-            
-            # Extract
-            intermediate = self.extract_intermediate_features(img_tensor)
-            
-            self.features_cache[img_name] = {
-                'intermediate': intermediate.cpu(),
-                'orig_size': (orig_w, orig_h),
-            }
-        
-        torch.save(self.features_cache, cache_file)
-        print(f"Saved cache to {cache_file}")
-        return self.features_cache
     
     def _collate_fn(self, batch):
         return batch[0] if len(batch) == 1 else batch

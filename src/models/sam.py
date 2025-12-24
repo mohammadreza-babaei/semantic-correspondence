@@ -14,7 +14,7 @@ from transformers import SamModel, SamConfig
 # Default 1024 is native SAM resolution.
 STANDARD_SIZE = 512 
 
-class SAMFineTuner:
+class SAMAdapter:
     def __init__(
         self,
         model_name='facebook/sam-vit-base',
@@ -183,93 +183,6 @@ class SAMFineTuner:
         feature_map = F.normalize(x, dim=1)
         
         return feature_map
-    
-    def extract_all_features(self, dataset, show_progress=True):
-        """
-        Pre-extract INTERMEDIATE features for all images at STANDARD_SIZE (1024x1024).
-        
-        Intermediate features are the output of frozen blocks (before unfrozen blocks).
-        During training, only unfrozen blocks are computed with gradients.
-        
-        Args:
-            dataset: SPair71kPairs dataset (any split, will extract from all JPEGImages)
-            show_progress: Whether to show progress bar
-            
-        Returns:
-            dict: Dictionary mapping image names to intermediate feature info
-        """
-        from tqdm import tqdm
-        
-        # Create cache directory and file path
-        cache_dir = Path('checkpoints') / 'feature_cache'
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = cache_dir / f"{self.model_name.replace('/', '_')}_intermediate_{self.num_frozen_blocks}frozen.pt"
-        
-        # Try to load all features from disk cache first
-        if cache_file.exists():
-            try:
-                print(f"Loading intermediate features from {cache_file}...")
-                self.features_cache = torch.load(cache_file, map_location='cpu')
-                print(f"Loaded {len(self.features_cache)} cached intermediate features from disk")
-                print(f"Features stored in RAM (CPU memory)")
-                return self.features_cache
-            except Exception as e:
-                print(f"Warning: Failed to load cache file: {e}")
-                print("Will re-extract features...")
-                self.features_cache = {}
-        
-        # Collect ALL unique images from the JPEGImages directory (all splits)
-        print("Scanning all images in JPEGImages directory...")
-        jpeg_dir = dataset.root / 'JPEGImages'
-        unique_images = set()
-        
-        # Walk through all category subdirectories
-        for category_dir in jpeg_dir.iterdir():
-            if category_dir.is_dir():
-                category = category_dir.name
-                for img_file in category_dir.glob('*.jpg'):
-                    img_name = f"{category}/{img_file.stem}"
-                    unique_images.add(img_name)
-        
-        print(f"Found {len(unique_images)} unique images across all splits")
-        print(f"Extracting intermediate features at {STANDARD_SIZE}x{STANDARD_SIZE}...")
-        
-        # Extract features for each unique image
-        iterator = tqdm(unique_images, desc="Extracting intermediate features") if show_progress else unique_images
-        
-        for img_name in iterator:
-            if img_name in self.features_cache:
-                continue
-            
-            # Get image path
-            img_path = dataset.root / 'JPEGImages' / f'{img_name}.jpg'
-            
-            # Load image and get original size
-            img = Image.open(img_path).convert('RGB')
-            orig_w, orig_h = img.size
-            
-            # Preprocess at standard_size
-            img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(self.standard_size, self.standard_size))
-            
-            # Extract INTERMEDIATE features (output of frozen blocks)
-            intermediate = self.extract_intermediate_features(img_tensor)
-            
-            # Store intermediate features in CPU memory (RAM) to save VRAM
-            self.features_cache[img_name] = {
-                'intermediate': intermediate.cpu(),  # Move to CPU: (1, H, W, C)
-                'orig_size': (orig_w, orig_h),
-            }
-        
-        # Save all features to disk in a single file
-        try:
-            print(f"Saving {len(self.features_cache)} intermediate features to {cache_file}...")
-            torch.save(self.features_cache, cache_file)
-            print("Features saved successfully")
-        except Exception as e:
-            print(f"Warning: Failed to save cache file: {e}")
-        
-        print(f"Cached intermediate features for {len(self.features_cache)} images")
-        return self.features_cache
     
     def _collate_fn(self, batch):
         """Custom collate function for SPair dataset."""

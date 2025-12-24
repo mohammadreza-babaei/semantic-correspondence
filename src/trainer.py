@@ -10,6 +10,8 @@ from pathlib import Path
 import os
 import csv
 import wandb
+from tqdm import tqdm
+
 
 from src.new_loss import loss as the_new_loss, predict_keypoints, predict_keypoints_window
 from src.pck import compute_pck_from_batch
@@ -32,6 +34,69 @@ class Trainer():
         }
         self.fixed_lr = kwargs.get('fixed_lr', False)
         self.scheduler = None
+
+    def cache_intermediate_features(self, dataset):
+        """Extract and save all intermediate features for the given dataset."""
+        
+        # Create cache directory and file path
+        cache_dir = Path('checkpoints') / 'feature_cache'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{self.model.model_name.replace('/', '_')}_intermediate_{self.model.num_frozen_blocks}frozen.pt"
+        
+        # Try to load all features from disk cache first
+        if cache_file.exists():
+            try:
+                print(f"Loading intermediate features from {cache_file}...")
+                self.model.features_cache = torch.load(cache_file, map_location='cpu')
+                print(f"Loaded {len(self.model.features_cache)} cached intermediate features from disk")
+                print(f"Features stored in RAM (CPU memory)")
+                return self.model.features_cache
+            except Exception as e:
+                print(f"Warning: Failed to load cache file: {e}")
+                print("Will re-extract features...")
+                self.model.features_cache = {}
+        
+        # Collect ALL unique images from the JPEGImages directory (all splits)
+        print("Scanning all images in JPEGImages directory...")
+        jpeg_dir = dataset.root / 'JPEGImages'
+        unique_images = set()
+        
+        # Walk through all category subdirectories
+        for category_dir in jpeg_dir.iterdir():
+            if category_dir.is_dir():
+                category = category_dir.name
+                for img_file in category_dir.glob('*.jpg'):
+                    img_name = f"{category}/{img_file.stem}"
+                    unique_images.add(img_name)
+        
+        print(f"Found {len(unique_images)} unique images across all splits")
+        print(f"Extracting intermediate features at {STANDARD_SIZE}x{STANDARD_SIZE}...")
+        
+        # Extract features for each unique image
+        iterator = tqdm(unique_images, desc="Extracting intermediate features") if show_progress else unique_images
+        
+        for img_name in iterator:
+            if img_name in self.model.features_cache:
+                continue
+            
+            # Get image path
+            img_path = dataset.root / 'JPEGImages' / f'{img_name}.jpg'
+            
+            # Load image and get original size
+            img = Image.open(img_path).convert('RGB')
+            orig_w, orig_h = img.size
+            
+            # Preprocess at standard_size
+            img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(self.standard_size, self.standard_size))
+            
+            # Extract INTERMEDIATE features (output of frozen blocks)
+            intermediate = self.extract_intermediate_features(img_tensor)
+            
+            # Store intermediate features in CPU memory (RAM) to save VRAM
+            self.model.features_cache[img_name] = {
+                'intermediate': intermediate.cpu(),  # Move to CPU: (1, H, W, C)
+                'orig_size': (orig_w, orig_h),
+            }
 
     def train_step(self, batch, accumulation_steps=1):
         """Single training step using cached intermediate features.
@@ -132,11 +197,6 @@ class Trainer():
         trg_name = batch['trg_name']
         src_kps = batch['src_kps']
         trg_kps = batch['trg_kps']
-        
-        # Get cached INTERMEDIATE features (required)
-        if src_name not in self.model.features_cache or trg_name not in self.model.features_cache:
-            raise RuntimeError(f"Intermediate features not cached for {src_name} or {trg_name}. "
-                             "Call extract_all_features() before validation.")
         
         # Load intermediate features from CPU cache and move to GPU for computation
         src_intermediate = self.model.features_cache[src_name]['intermediate'].to(self.device)
@@ -293,7 +353,6 @@ class Trainer():
         print("\n" + "="*60)
         print("Pre-extracting features...")
         print("="*60)
-        self.model.extract_all_features(train_dataset)
         
         # Create data loaders
         train_loader = DataLoader(
@@ -303,6 +362,9 @@ class Trainer():
             num_workers=0, 
             collate_fn=self.model._collate_fn
         )
+
+        self.cache_intermediate_features(train_loader)
+
         
         val_loader = None
         if val_dataset is not None:

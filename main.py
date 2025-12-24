@@ -5,9 +5,7 @@ import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
 
-from src.dinov3_features import DINOv3FineTuner
-from src.dinov2_features import DINOv2FineTuner
-from src.sam_features import SAMFineTuner
+from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 from src.pck import compute_raw_distances
@@ -125,7 +123,7 @@ def fine_tune(args, model_type):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     if model_type == 'dinov2':
-        fine_tuner = DINOv2FineTuner(
+        fine_tuner = DINOv2Adapter(
             model_name=args.model_name,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
@@ -134,14 +132,14 @@ def fine_tune(args, model_type):
              print("Warning: Custom weights path provided but not supported for DINOv2 yet.")
 
     elif model_type == 'dinov3':
-        fine_tuner = DINOv3FineTuner(
+        fine_tuner = DINOv3Adapter(
             model_name=args.model_name,
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
         )
     elif model_type == 'sam':
-        fine_tuner = SAMFineTuner(
+        fine_tuner = SAMAdapter(
             model_name=args.model_name,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
