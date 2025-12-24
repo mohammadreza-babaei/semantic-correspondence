@@ -39,8 +39,6 @@ class DINOv3Adapter:
         self.device = device
         self.model_name = model_name
 
-        assert(weights_path is not None, "Weights path must be provided")
-        assert(os.path.exists(weights_path), "Weights path does not exist")
         print(f"Loading local weights from: {weights_path}")
         
         self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
@@ -196,9 +194,6 @@ class DINOv3Adapter:
         
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
         return F.normalize(feature_map, dim=1)
-    
-    def _collate_fn(self, batch):
-        return batch[0] if len(batch) == 1 else batch
     
     def save_checkpoint(self, path):
         checkpoint = {

@@ -17,6 +17,7 @@ class DINOv2Adapter:
     def __init__(
         self,
         model_name='dinov2_vits14',
+        weights_path=None,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
     ):
@@ -26,19 +27,46 @@ class DINOv2Adapter:
         Args:
             model_name (str): The DINOv2 model to load. Options: 
                               'dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14'
+            weights_path (str, optional): Path to custom .pth weights file. If None, loads pretrained from torch.hub.
             device (str): Computation device ('cuda' or 'cpu').
             num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
         """
         self.standard_size = STANDARD_SIZE
         self.device = device
         self.patch_size = 14 # DINOv2 usually uses patch size 14
-        
-        print(f"Loading {model_name} on {self.device}...")
-        self.model = torch.hub.load('facebookresearch/dinov2', model_name).to(self.device)
-        self.model.eval() # Set to evaluation mode (frozen features)
-
-        self.device = device
         self.model_name = model_name
+        
+        # Load model architecture and weights
+        if weights_path is not None:
+            # Load custom weights
+            if not os.path.exists(weights_path):
+                raise FileNotFoundError(f"Weights file not found: {weights_path}")
+            
+            print(f"Loading {model_name} architecture (no pretrained weights)...")
+            self.model = torch.hub.load('facebookresearch/dinov2', model_name, pretrained=False).to(self.device)
+            
+            print(f"Loading custom weights from: {weights_path}")
+            state_dict = torch.load(weights_path, map_location='cpu')
+            
+            # Clean state dictionary keys to handle various prefixes
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                # Remove common prefixes that might be present in saved checkpoints
+                k = k.replace("model.", "")
+                k = k.replace("base_model.model.", "")
+                k = k.replace("teacher.", "")
+                k = k.replace("backbone.", "")
+                new_state_dict[k] = v
+            
+            # Load the cleaned state dict
+            msg = self.model.load_state_dict(new_state_dict, strict=False)
+            print(f"Weights loaded. Status: {msg}")
+        else:
+            # Load pretrained model from torch.hub
+            print(f"Loading {model_name} with pretrained weights from torch.hub...")
+            self.model = torch.hub.load('facebookresearch/dinov2', model_name).to(self.device)
+        
+        self.model.eval() # Set to evaluation mode (frozen features)
         
         # Store number of unfrozen blocks for feature caching logic
         self.num_unfrozen_blocks = num_unfrozen_blocks
@@ -171,14 +199,6 @@ class DINOv2Adapter:
         feature_map = F.normalize(feature_map, dim=1)
         
         return feature_map
-    
-    def _collate_fn(self, batch):
-        """Custom collate function for SPair dataset."""
-        # For batch_size=1, just return the single item
-        if len(batch) == 1:
-            return batch[0]
-        # For larger batches, keep as list
-        return batch
     
     def save_checkpoint(self, path):
         """Save model checkpoint."""

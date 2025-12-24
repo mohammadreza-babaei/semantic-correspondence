@@ -315,8 +315,8 @@ class Trainer():
                 batch_size: Batch size (default: 1, typically 1 for correspondence)
                 log_interval: How often to log training progress (default: 10)
                 save_path: Path to save checkpoints (required)
-                plot_every_epoch: Whether to update plots after each epoch (default: True)
                 max_iters_per_epoch: Maximum iterations per epoch (default: None for full epoch)
+                accumulation_steps: Number of steps to accumulate gradients (default: 1)
         
         Returns:
             history: Dictionary containing training history
@@ -327,7 +327,6 @@ class Trainer():
         batch_size = kwargs.get('batch_size', 1)
         log_interval = kwargs.get('log_interval', 10)
         save_path = kwargs.get('save_path')
-        plot_every_epoch = kwargs.get('plot_every_epoch', True)
         max_iters_per_epoch = kwargs.get('max_iters_per_epoch', None)
         accumulation_steps = kwargs.get('accumulation_steps', 1)
         
@@ -361,7 +360,7 @@ class Trainer():
             batch_size=batch_size, 
             shuffle=True,
             num_workers=0, 
-            collate_fn=self.model._collate_fn
+            collate_fn=self._collate_fn
         )
 
         self.cache_intermediate_features(train_loader)
@@ -374,7 +373,7 @@ class Trainer():
                 batch_size=batch_size,
                 shuffle=False,
                 num_workers=0,
-                collate_fn=self.model._collate_fn
+                collate_fn=self._collate_fn
             )
         
         # Setup scheduler
@@ -576,3 +575,6 @@ class Trainer():
         print(f"{'='*60}")
         
         return self.history
+
+    def _collate_fn(self, batch):
+        return batch[0] if len(batch) == 1 else batch

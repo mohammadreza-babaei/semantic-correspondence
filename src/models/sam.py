@@ -181,14 +181,6 @@ class SAMAdapter:
         
         return feature_map
     
-    def _collate_fn(self, batch):
-        """Custom collate function for SPair dataset."""
-        # For batch_size=1, just return the single item
-        if len(batch) == 1:
-            return batch[0]
-        # For larger batches, keep as list
-        return batch
-    
     def save_checkpoint(self, path):
         """Save model checkpoint."""
         checkpoint = {

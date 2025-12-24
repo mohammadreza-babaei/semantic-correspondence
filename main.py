@@ -125,11 +125,10 @@ def fine_tune(args, model_type):
     if model_type == 'dinov2':
         fine_tuner = DINOv2Adapter(
             model_name=args.model_name,
+            weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
         )
-        if args.weights_path:
-             print("Warning: Custom weights path provided but not supported for DINOv2 yet.")
 
     elif model_type == 'dinov3':
         fine_tuner = DINOv3Adapter(
