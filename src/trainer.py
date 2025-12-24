@@ -25,7 +25,7 @@ class Trainer():
         self.history = {
             'train_loss': [],
             'val_loss': [],
-            'val_pck': [], # <--- Added history for PCK
+            'val_pck': [],
             'epoch_train_losses': [],
             'learning_rates': []
         }
@@ -290,7 +290,7 @@ class Trainer():
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size, 
-            shuffle=False,
+            shuffle=True,
             num_workers=0, 
             collate_fn=self.model._collate_fn
         )
