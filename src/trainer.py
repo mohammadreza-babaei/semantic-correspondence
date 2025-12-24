@@ -56,6 +56,9 @@ class Trainer():
                 print(f"Warning: Failed to load cache file: {e}")
                 print("Will re-extract features...")
                 self.features_cache = {}
+        else:
+            # Initialize empty cache if file doesn't exist
+            self.features_cache = {}
         
         # Collect ALL unique images from the JPEGImages directory (all splits)
         print("Scanning all images in JPEGImages directory...")
@@ -71,10 +74,10 @@ class Trainer():
                     unique_images.add(img_name)
         
         print(f"Found {len(unique_images)} unique images across all splits")
-        print(f"Extracting intermediate features at {STANDARD_SIZE}x{STANDARD_SIZE}...")
+        print(f"Extracting intermediate features at {self.model.standard_size}x{self.model.standard_size}...")
         
         # Extract features for each unique image
-        iterator = tqdm(unique_images, desc="Extracting intermediate features") if show_progress else unique_images
+        iterator = tqdm(unique_images, desc="Extracting intermediate features")
         
         for img_name in iterator:
             if img_name in self.features_cache:
@@ -88,16 +91,21 @@ class Trainer():
             orig_w, orig_h = img.size
             
             # Preprocess at standard_size
-            img_tensor = self.feature_extractor.preprocess_image_pil(img, target_size=(self.standard_size, self.standard_size))
+            img_tensor = self.model.preprocess_image_pil(img, target_size=(self.model.standard_size, self.model.standard_size))
             
             # Extract INTERMEDIATE features (output of frozen blocks)
-            intermediate = self.extract_intermediate_features(img_tensor)
+            intermediate = self.model.extract_intermediate_features(img_tensor)
             
             # Store intermediate features in CPU memory (RAM) to save VRAM
             self.features_cache[img_name] = {
                 'intermediate': intermediate.cpu(),  # Move to CPU: (1, H, W, C)
                 'orig_size': (orig_w, orig_h),
             }
+        
+        # Save cache to disk for future use
+        print(f"Saving cache to {cache_file}...")
+        torch.save(self.features_cache, cache_file)
+        print(f"Cached {len(self.features_cache)} features to disk")
 
     def train_step(self, batch, accumulation_steps=1):
         """Single training step using cached intermediate features.
@@ -363,7 +371,7 @@ class Trainer():
             collate_fn=self._collate_fn
         )
 
-        self.cache_intermediate_features(train_loader)
+        self.cache_intermediate_features(train_dataset)
 
         
         val_loader = None
