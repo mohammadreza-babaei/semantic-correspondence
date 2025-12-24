@@ -133,6 +133,8 @@ def fine_tune(args, model_type):
         )
 
     elif model_type == 'dinov3':
+        DINOV3_DOWNLOAD_URL="https://github.com/facebookresearch/dinov3"
+        assert args.weights_path is not None, "Weights path must be specified for DINOV3. Download from {DINOV3_DOWNLOAD_URL}"
         fine_tuner = DINOv3Adapter(
             model_name=args.model_name,
             weights_path=args.weights_path,
@@ -140,8 +142,11 @@ def fine_tune(args, model_type):
             num_unfrozen_blocks=args.num_unfrozen_blocks
         )
     elif model_type == 'sam':
+        SAM_DOWNLOAD_URL="https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints"
+        assert args.weights_path is not None, "Weights path must be specified for SAM. Download from {SAM_DOWNLOAD_URL}"
         fine_tuner = SAMAdapter(
             model_name=args.model_name.replace("sam_", ""),
+            weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
         )

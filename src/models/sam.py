@@ -17,7 +17,7 @@ class SAMAdapter:
     def __init__(
         self,
         model_name='vit_b',
-        checkpoint_path=None,
+        weights_path=None,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
     ):
@@ -29,7 +29,7 @@ class SAMAdapter:
                               'vit_b' (Recommended for speed/memory)
                               'vit_l'
                               'vit_h'
-            checkpoint_path (str): Path to .pth weights file. Required for loading the model.
+            weights_path (str): Path to .pth weights file. Required for loading the model.
             device (str): Computation device.
             num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
         """
@@ -45,7 +45,7 @@ class SAMAdapter:
         print(f"Loading SAM {model_name} on {self.device}...")
         
         # Build the SAM model using the registry
-        self.sam_model = sam_model_registry[model_name](checkpoint=checkpoint_path)
+        self.sam_model = sam_model_registry[model_name](checkpoint=weights_path)
         self.sam_model.to(self.device)
         self.sam_model.eval()
         

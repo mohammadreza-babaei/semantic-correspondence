@@ -40,7 +40,6 @@ class DINOv3Adapter:
         self.model_name = model_name
 
         print(f"Loading local weights from: {weights_path}")
-        
         self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
 
         # 2. Load Weights (.pth)
@@ -90,12 +89,7 @@ class DINOv3Adapter:
         
         self.trainable_params = [p for p in self.model.parameters() if p.requires_grad and p.is_leaf]
         
-
-            
         print(f"Initializing {model_name} on {self.device}...")
-
-        
-        
 
         self.model.eval() # Set to evaluation mode
 
