@@ -13,8 +13,13 @@ import os
 # Standard image size for all feature extraction (divisible by patch_size=14)
 STANDARD_SIZE = 518 # Multiple of 14 (14*37=518), used in the DINOv2 paper
 
-class DINOv2FeatureExtractor:
-    def __init__(self, model_name='dinov2_vits14', device='cuda' if torch.cuda.is_available() else 'cpu'):
+class DINOv2FineTuner:
+    def __init__(
+        self,
+        model_name='dinov2_vits14',
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        num_unfrozen_blocks=2,
+    ):
         """
         Initializes the DINOv2 model.
         
@@ -22,13 +27,66 @@ class DINOv2FeatureExtractor:
             model_name (str): The DINOv2 model to load. Options: 
                               'dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14'
             device (str): Computation device ('cuda' or 'cpu').
+            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
         """
+        self.standard_size = STANDARD_SIZE
         self.device = device
         self.patch_size = 14 # DINOv2 usually uses patch size 14
         
         print(f"Loading {model_name} on {self.device}...")
         self.model = torch.hub.load('facebookresearch/dinov2', model_name).to(self.device)
         self.model.eval() # Set to evaluation mode (frozen features)
+
+        """
+        Initialize the fine-tuner.
+        
+        Args:
+            model_name: DINOv2 model variant to use
+            device: Device for computation
+            num_unfrozen_blocks: Number of transformer blocks to unfreeze from the end
+            learning_rate: Learning rate for training
+            feature_extractor: Optional pre-initialized DINOv2FeatureExtractor. If None,
+                               a new one will be created.
+        """
+        self.device = device
+        self.model_name = model_name
+        
+        # Store number of unfrozen blocks for feature caching logic
+        self.num_unfrozen_blocks = num_unfrozen_blocks
+        self.num_frozen_blocks = len(self.model.blocks) - num_unfrozen_blocks
+        
+        # Freeze all parameters first
+        for param in self.model.parameters():
+            param.requires_grad = False
+        
+        # Unfreeze the last N transformer blocks
+        num_blocks = len(self.model.blocks)
+        print(f"Total transformer blocks: {num_blocks}")
+        print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
+        
+        blocks_to_unfreeze = list(self.model.blocks)[-num_unfrozen_blocks:]
+        for block in blocks_to_unfreeze:
+            for param in block.parameters():
+                param.requires_grad = True
+        
+        # Also unfreeze the final norm layer
+        if hasattr(self.model, 'norm'):
+            for param in self.model.norm.parameters():
+                param.requires_grad = True
+            print("Unfreezing final norm layer...")
+        
+        # Count trainable parameters
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
+        
+        
+        # Filter to ensure we only get leaf tensors that require grad
+        self.trainable_params = [p for p in self.model.parameters() if p.requires_grad and p.is_leaf]
+        
+        # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
+        # These are the inputs to the unfrozen blocks
+        self.features_cache = {}
 
     def preprocess_image(self, image_path, target_size=None):
         """
@@ -63,64 +121,6 @@ class DINOv2FeatureExtractor:
         ])
         
         return resize_transform(img).unsqueeze(0).to(self.device)
-    
-    def get_embed_dim(self):
-        """Get the embedding dimension of the model."""
-        return self.model.embed_dim
-
-    def extract_features(self, image_tensor):
-        """
-        Extracts dense features from the image
-        
-        Returns:
-            torch.Tensor: Feature map of shape (1, C, H_patch, W_patch)
-                          where H_patch = H_img // 14, W_patch = W_img // 14
-        """
-        with torch.no_grad():
-            # DINOv2 forward_features returns a dict. 
-            # 'x_norm_patchtokens' contains the patch features after the last block & norm.
-            features_dict = self.model.forward_features(image_tensor)
-            patch_tokens = features_dict['x_norm_patchtokens'] # Shape: (B, N_patches, C)
-            
-            # Reshape tokens back to spatial grid
-            B, N, C = patch_tokens.shape
-            H_img, W_img = image_tensor.shape[2], image_tensor.shape[3]
-            H_patch = H_img // self.patch_size
-            W_patch = W_img // self.patch_size
-            
-            # Sanity check: ensure patch count matches dimensions
-            assert N == H_patch * W_patch, "Patch count mismatch!"
-            
-            # Reshape to (B, C, H, W) for easier cosine similarity calculation later
-            feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H_patch, W_patch)
-            
-            # L2 Normalize features (critical for Cosine Similarity) 
-            feature_map = torch.nn.functional.normalize(feature_map, dim=1)
-            
-            return feature_map
-
-    def map_keypoints(self, keypoints, inverse=False):
-        """
-        Maps keypoints between image pixel coordinates and feature map coordinates.
-        
-        Args:
-            keypoints (torch.Tensor or numpy.ndarray): Shape (N, 2) containing (x, y) coordinates.
-            inverse (bool): If False (default), maps Image Pixels -> Feature Grid (divides by patch_size).
-                            If True, maps Feature Grid -> Image Pixels (multiplies by patch_size).
-        
-        Returns:
-            torch.Tensor: Mapped keypoints.
-        """
-        if not isinstance(keypoints, torch.Tensor):
-            keypoints = torch.tensor(keypoints, device=self.device)
-            
-        if inverse:
-            # Feature Grid -> Image Pixels
-            # We map the center of the patch back to the pixel space
-            return keypoints * self.patch_size + (self.patch_size / 2)
-        else:
-            # Image Pixels -> Feature Grid
-            return keypoints / self.patch_size
 
     def fine_tune(self, checkpoint_path='checkpoints/dinov2_features/dinov2_vits14_features.pt'):
         """
@@ -144,91 +144,6 @@ class DINOv2FeatureExtractor:
         else:
             raise ValueError("Checkpoint format not recognized. Expected a dictionary.")
 
-
-
-class DINOv2FineTuner:
-    """Fine-tuning trainer for DINOv2-based semantic correspondence by unfreezing last layers.
-    
-    Architecture for gradient flow:
-    - Pre-extracts INTERMEDIATE features from frozen blocks (cached to disk)
-    - During training, only the unfrozen blocks + norm are computed with gradients
-    - All images are resized to STANDARD_SIZE (518x518) for consistent feature maps
-    
-    This allows efficient training while maintaining proper gradient flow.
-    """
-    
-    def __init__(
-        self,
-        model_name='dinov2_vits14',
-        device='cuda' if torch.cuda.is_available() else 'cpu',
-        num_unfrozen_blocks=2,
-        learning_rate=1e-5,
-        feature_extractor=None,
-    ):
-        self.standard_size = STANDARD_SIZE
-        """
-        Initialize the fine-tuner.
-        
-        Args:
-            model_name: DINOv2 model variant to use
-            device: Device for computation
-            num_unfrozen_blocks: Number of transformer blocks to unfreeze from the end
-            learning_rate: Learning rate for training
-            feature_extractor: Optional pre-initialized DINOv2FeatureExtractor. If None,
-                               a new one will be created.
-        """
-        self.device = device
-        self.model_name = model_name
-        
-        # Use provided feature extractor or create a new one
-        if feature_extractor is not None:
-            self.feature_extractor = feature_extractor
-            self.backbone = feature_extractor.model
-            print(f"Using provided DINOv2FeatureExtractor")
-        else:
-            self.feature_extractor = DINOv2FeatureExtractor(model_name=model_name, device=device)
-            self.backbone = self.feature_extractor.model
-        
-        self.patch_size = self.feature_extractor.patch_size
-        self.embed_dim = self.feature_extractor.get_embed_dim()
-        
-        # Store number of unfrozen blocks for feature caching logic
-        self.num_unfrozen_blocks = num_unfrozen_blocks
-        self.num_frozen_blocks = len(self.backbone.blocks) - num_unfrozen_blocks
-        
-        # Freeze all parameters first
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-        
-        # Unfreeze the last N transformer blocks
-        num_blocks = len(self.backbone.blocks)
-        print(f"Total transformer blocks: {num_blocks}")
-        print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
-        
-        blocks_to_unfreeze = list(self.backbone.blocks)[-num_unfrozen_blocks:]
-        for block in blocks_to_unfreeze:
-            for param in block.parameters():
-                param.requires_grad = True
-        
-        # Also unfreeze the final norm layer
-        if hasattr(self.backbone, 'norm'):
-            for param in self.backbone.norm.parameters():
-                param.requires_grad = True
-            print("Unfreezing final norm layer...")
-        
-        # Count trainable parameters
-        trainable_params = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.backbone.parameters())
-        print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
-        
-        
-        # Filter to ensure we only get leaf tensors that require grad
-        self.trainable_params = [p for p in self.backbone.parameters() if p.requires_grad and p.is_leaf]
-        
-        # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
-        # These are the inputs to the unfrozen blocks
-        self.features_cache = {}
-    
     def extract_intermediate_features(self, image_tensor):
         """
         Extract INTERMEDIATE features - output of frozen blocks, before unfrozen blocks.
@@ -241,17 +156,17 @@ class DINOv2FineTuner:
         """
         with torch.no_grad():
             # Run patch embedding
-            x = self.backbone.patch_embed(image_tensor)
+            x = self.model.patch_embed(image_tensor)
             
             # Add CLS token
-            cls_tokens = self.backbone.cls_token.expand(x.shape[0], -1, -1)
+            cls_tokens = self.model.cls_token.expand(x.shape[0], -1, -1)
             x = torch.cat((cls_tokens, x), dim=1)
             
             # Add position embeddings
-            x = x + self.backbone.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
+            x = x + self.model.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
             
             # Run through FROZEN blocks only
-            for i, block in enumerate(self.backbone.blocks):
+            for i, block in enumerate(self.model.blocks):
                 if i >= self.num_frozen_blocks:
                     break
                 x = block(x)
@@ -273,11 +188,11 @@ class DINOv2FineTuner:
         x = intermediate_features
         
         # Run through UNFROZEN blocks
-        for block in list(self.backbone.blocks)[-self.num_unfrozen_blocks:]:
+        for block in list(self.model.blocks)[-self.num_unfrozen_blocks:]:
             x = block(x)
         
         # Apply final norm
-        x = self.backbone.norm(x)
+        x = self.model.norm(x)
         
         # Remove CLS token to get patch tokens only
         patch_tokens = x[:, 1:]  # (B, N, C)
@@ -393,8 +308,8 @@ class DINOv2FineTuner:
     def save_checkpoint(self, path):
         """Save model checkpoint."""
         checkpoint = {
-            'backbone_state_dict': self.backbone.state_dict(),
-            'embed_dim': self.embed_dim,
+            'backbone_state_dict': self.model.state_dict(),
+            'embed_dim': self.model.embed_dim,
             'patch_size': self.patch_size
         }
         torch.save(checkpoint, path)
@@ -403,5 +318,5 @@ class DINOv2FineTuner:
     def load_checkpoint(self, path):
         """Load model checkpoint."""
         checkpoint = torch.load(path, map_location=self.device)
-        self.backbone.load_state_dict(checkpoint['backbone_state_dict'])
+        self.model.load_state_dict(checkpoint['backbone_state_dict'])
         print(f"Checkpoint loaded: {path}")

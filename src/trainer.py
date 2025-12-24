@@ -113,7 +113,7 @@ class Trainer():
         loss_scaled.backward()
         
         # Gradient clipping remains here (gradients are accumulated)
-        torch.nn.utils.clip_grad_norm_(self.model.backbone.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.model.model.parameters(), max_norm=1.0)
         
         return loss.item()
     
@@ -125,7 +125,7 @@ class Trainer():
         Args:
             batch: Dictionary containing 'src_name', 'trg_name', 'src_kps', 'trg_kps'
         """
-        self.model.backbone.eval()
+        self.model.model.eval()
         
         # Get image names and keypoints
         src_name = batch['src_name']
@@ -378,7 +378,7 @@ class Trainer():
         
         for epoch in range(epochs):
             # Training phase
-            self.model.backbone.train()
+            self.model.model.train()
             epoch_losses = []
             
             # Determine iteration limit for this epoch
@@ -435,7 +435,7 @@ class Trainer():
             val_pck_w = None
             
             if val_loader is not None:
-                self.model.backbone.eval()
+                self.model.model.eval()
                 val_losses = []
                 val_pcks_g = [] # Global
                 val_pcks_w = [] # Window

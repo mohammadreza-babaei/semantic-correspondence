@@ -17,8 +17,14 @@ WEIGHTS_PATH = os.path.join(script_dir, "model.safetensors")
 MODEL_NAME = "dinov3_vits16"                   
 REPO_SOURCE = "facebookresearch/dinov3" 
 
-class DINOv3FeatureExtractor:
-    def __init__(self, model_name='dinov3_vits16', weights_path=None, device='cuda' if torch.cuda.is_available() else 'cpu'):
+class DINOv3FineTuner:
+    def __init__(
+        self,
+        model_name='dinov3_vits16',
+        weights_path=None,
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        num_unfrozen_blocks=2,
+    ):
         """
         Initializes the DINOv3 model.
         
@@ -26,40 +32,73 @@ class DINOv3FeatureExtractor:
             model_name (str): The DINOv3 model to load (e.g., 'dinov3_vits16').
             weights_path (str, optional): Path to local .pth file. If None, downloads from Hub.
             device (str): Computation device.
+            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze.
         """
-        self.device = device
         self.patch_size = 16
+        self.standard_size = STANDARD_SIZE
+        self.device = device
+        self.model_name = model_name
+
+        assert(weights_path is not None, "Weights path must be provided")
+        assert(os.path.exists(weights_path), "Weights path does not exist")
+        print(f"Loading local weights from: {weights_path}")
+        
+        self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
+
+        # 2. Load Weights (.pth)
+        state_dict = torch.load(weights_path, map_location='cpu')
+
+        # 3. Clean Keys
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            # Remove Hugging Face specific prefixes
+            k = k.replace("model.", "") 
+            k = k.replace("base_model.model.", "")
+            # Remove standard DINO prefixes
+            k = k.replace("teacher.", "")
+            k = k.replace("backbone.", "") 
+            new_state_dict[k] = v
+        
+        # 4. Inject weights
+        msg = self.model.load_state_dict(new_state_dict, strict=False)
+        print(f"Weights loaded. Status: {msg}")
+        
+        # Feature caching setup
+        self.num_unfrozen_blocks = num_unfrozen_blocks
+        self.num_frozen_blocks = len(self.model.blocks) - num_unfrozen_blocks
+        self.features_cache = {}
+        
+        # 1. Freeze all parameters first
+        for param in self.model.parameters():
+            param.requires_grad = False
+        
+        # 2. Unfreeze the last N transformer blocks
+        print(f"Total blocks: {len(self.model.blocks)}, Frozen: {self.num_frozen_blocks}, Unfrozen: {num_unfrozen_blocks}")
+        
+        blocks_to_unfreeze = list(self.model.blocks)[-num_unfrozen_blocks:]
+        for block in blocks_to_unfreeze:
+            for param in block.parameters():
+                param.requires_grad = True
+        
+        # 3. Unfreeze final norm layer
+        if hasattr(self.model, 'norm'):
+            for param in self.model.norm.parameters():
+                param.requires_grad = True
+            print("Unfreezing final norm layer...")
+        
+        # Statistics
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.model.parameters())
+        print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
+        
+        self.trainable_params = [p for p in self.model.parameters() if p.requires_grad and p.is_leaf]
+        
 
             
         print(f"Initializing {model_name} on {self.device}...")
 
         
-        if weights_path:
-            print(f"Loading local weights from: {weights_path}")
-            
-            self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
-
-            # 2. Load Weights (.pth)
-            state_dict = torch.load(weights_path, map_location='cpu')
-
-            # 3. Clean Keys
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                # Remove Hugging Face specific prefixes
-                k = k.replace("model.", "") 
-                k = k.replace("base_model.model.", "")
-                # Remove standard DINO prefixes
-                k = k.replace("teacher.", "")
-                k = k.replace("backbone.", "") 
-                new_state_dict[k] = v
-            
-            # 4. Inject weights
-            msg = self.model.load_state_dict(new_state_dict, strict=False)
-            print(f"Weights loaded. Status: {msg}")
-
-        else:
-            print(f"No local weights provided. Loading pretrained model from Hub...")
-            self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=True).to(self.device)
+        
 
         self.model.eval() # Set to evaluation mode
 
@@ -89,108 +128,6 @@ class DINOv3FeatureExtractor:
         ])
         
         return resize_transform(img).unsqueeze(0).to(self.device)
-
-    def get_embed_dim(self):
-        """Get the embedding dimension of the model."""
-        return self.model.embed_dim
-
-    def extract_features(self, image_tensor):
-        """
-        Extracts dense features from the image.
-        Returns: Feature map of shape (1, C, H_patch, W_patch)
-        """
-        with torch.no_grad():
-            features_dict = self.model.forward_features(image_tensor)
-            patch_tokens = features_dict['x_norm_patchtokens'] # Shape: (B, N_patches, C)
-            
-            B, N, C = patch_tokens.shape
-            H_img, W_img = image_tensor.shape[2], image_tensor.shape[3]
-            H_patch = H_img // self.patch_size
-            W_patch = W_img // self.patch_size
-            
-            if N != H_patch * W_patch:
-                raise ValueError(f"Patch count mismatch! Expected {H_patch*W_patch}, got {N}.")
-            
-            feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H_patch, W_patch)
-            feature_map = torch.nn.functional.normalize(feature_map, dim=1)
-            return feature_map
-
-    def map_keypoints(self, keypoints, inverse=False):
-        """Maps keypoints between image pixel coordinates and feature map coordinates."""
-        if not isinstance(keypoints, torch.Tensor):
-            keypoints = torch.tensor(keypoints, device=self.device)
-            
-        if inverse:
-            return keypoints * self.patch_size + (self.patch_size / 2)
-        else:
-            return keypoints / self.patch_size
-
-
-class DINOv3FineTuner:
-    """
-    Fine-tuning trainer for DINOv3-based semantic correspondence.
-    Compatible with src/trainer.py.
-    """
-    def __init__(
-        self,
-        model_name='dinov3_vits16',
-        weights_path=None,  # Accept weights_path here
-        device='cuda' if torch.cuda.is_available() else 'cpu',
-        num_unfrozen_blocks=2,
-        learning_rate=1e-5,
-        feature_extractor=None,
-    ):
-        self.standard_size = STANDARD_SIZE
-        self.device = device
-        self.model_name = model_name
-        
-        # Use provided feature extractor or create a new one
-        if feature_extractor is not None:
-            self.feature_extractor = feature_extractor
-            self.backbone = feature_extractor.model
-            print(f"Using provided DINOv3FeatureExtractor")
-        else:
-            # Pass weights_path down to the extractor
-            self.feature_extractor = DINOv3FeatureExtractor(
-                model_name=model_name, 
-                weights_path=weights_path, 
-                device=device
-            )
-            self.backbone = self.feature_extractor.model
-        
-        self.patch_size = self.feature_extractor.patch_size
-        self.embed_dim = self.feature_extractor.get_embed_dim()
-        
-        # Feature caching setup
-        self.num_unfrozen_blocks = num_unfrozen_blocks
-        self.num_frozen_blocks = len(self.backbone.blocks) - num_unfrozen_blocks
-        self.features_cache = {}
-        
-        # 1. Freeze all parameters first
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-        
-        # 2. Unfreeze the last N transformer blocks
-        print(f"Total blocks: {len(self.backbone.blocks)}, Frozen: {self.num_frozen_blocks}, Unfrozen: {num_unfrozen_blocks}")
-        
-        blocks_to_unfreeze = list(self.backbone.blocks)[-num_unfrozen_blocks:]
-        for block in blocks_to_unfreeze:
-            for param in block.parameters():
-                param.requires_grad = True
-        
-        # 3. Unfreeze final norm layer
-        if hasattr(self.backbone, 'norm'):
-            for param in self.backbone.norm.parameters():
-                param.requires_grad = True
-            print("Unfreezing final norm layer...")
-        
-        # Statistics
-        trainable_params = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.backbone.parameters())
-        print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
-        
-        self.trainable_params = [p for p in self.backbone.parameters() if p.requires_grad and p.is_leaf]
-        
     
     def extract_intermediate_features(self, image_tensor):
         """
@@ -201,13 +138,13 @@ class DINOv3FineTuner:
         with torch.no_grad():
             # Step 1: Use DINOv3's prepare_tokens_with_masks for proper tokenization
             # This handles patch embedding, CLS token, and storage tokens
-            x, seq_shape = self.backbone.prepare_tokens_with_masks(image_tensor)
+            x, seq_shape = self.model.prepare_tokens_with_masks(image_tensor)
             
             # Step 2: Generate RoPE embeddings for this spatial shape
-            rope = self.backbone.rope_embed(H=seq_shape[0], W=seq_shape[1])
+            rope = self.model.rope_embed(H=seq_shape[0], W=seq_shape[1])
             
             # Step 3: Run through FROZEN blocks only, passing rope to each
-            for i, block in enumerate(self.backbone.blocks):
+            for i, block in enumerate(self.model.blocks):
                 if i >= self.num_frozen_blocks:
                     break
                 x = block(x, rope)
@@ -242,14 +179,14 @@ class DINOv3FineTuner:
                  raise ValueError(f"Not enough tokens! N={N}, Expected at least {n_patches} (H={H}, W={W})")
         
         # Generate RoPE embeddings (must be on same device as x)
-        rope = self.backbone.rope_embed(H=seq_shape[0], W=seq_shape[1])
+        rope = self.model.rope_embed(H=seq_shape[0], W=seq_shape[1])
         
         # Run through UNFROZEN blocks with rope
-        for block in list(self.backbone.blocks)[-self.num_unfrozen_blocks:]:
+        for block in list(self.model.blocks)[-self.num_unfrozen_blocks:]:
             x = block(x, rope)
         
         # Apply final norm
-        x = self.backbone.norm(x)
+        x = self.model.norm(x)
         
         # Remove storage tokens (CLS + Registers) to get patch tokens only
         # We assume patch tokens are always the LAST H*W tokens in ViT
@@ -319,8 +256,8 @@ class DINOv3FineTuner:
     
     def save_checkpoint(self, path):
         checkpoint = {
-            'backbone_state_dict': self.backbone.state_dict(),
-            'embed_dim': self.embed_dim,
+            'backbone_state_dict': self.model.state_dict(),
+            'embed_dim': self.model.embed_dim,
             'patch_size': self.patch_size
         }
         torch.save(checkpoint, path)
@@ -328,5 +265,5 @@ class DINOv3FineTuner:
     
     def load_checkpoint(self, path):
         checkpoint = torch.load(path, map_location=self.device)
-        self.backbone.load_state_dict(checkpoint['backbone_state_dict'])
+        self.model.load_state_dict(checkpoint['backbone_state_dict'])
         print(f"Checkpoint loaded: {path}")

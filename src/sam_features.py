@@ -14,8 +14,13 @@ from transformers import SamModel, SamConfig
 # Default 1024 is native SAM resolution.
 STANDARD_SIZE = 512 
 
-class SAMFeatureExtractor:
-    def __init__(self, model_name='facebook/sam-vit-base', device='cuda' if torch.cuda.is_available() else 'cpu'):
+class SAMFineTuner:
+    def __init__(
+        self,
+        model_name='facebook/sam-vit-base',
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        num_unfrozen_blocks=2,
+    ):
         """
         Initializes the SAM model using HuggingFace Transformers.
         
@@ -25,23 +30,58 @@ class SAMFeatureExtractor:
                               'facebook/sam-vit-large'
                               'facebook/sam-vit-huge'
             device (str): Computation device.
+            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
         """
         self.device = device
         self.patch_size = 16  # SAM uses a patch size of 16 for its encoder
         self.standard_size = STANDARD_SIZE
+        self.model_name = model_name
         
         print(f"Loading {model_name} on {self.device}...")
         
         # We load the full SAM model but will only use the vision_encoder part
-        self.model = SamModel.from_pretrained(model_name).to(self.device)
-        self.model.eval()
+        self.sam_model = SamModel.from_pretrained(model_name).to(self.device)
+        self.sam_model.eval()
+        
+        self.embed_dim = self.sam_model.config.vision_config.hidden_size
+        
+        # Access the vision encoder
+        self.model = self.sam_model.vision_encoder
+        
+        # Store number of unfrozen blocks for feature caching logic
+        self.num_unfrozen_blocks = num_unfrozen_blocks
+        self.num_frozen_blocks = len(self.model.layers) - num_unfrozen_blocks
+        
+        # Freeze all parameters first
+        for param in self.sam_model.parameters():
+            param.requires_grad = False
+        
+        # Unfreeze the last N transformer blocks in the vision encoder
+        num_blocks = len(self.model.layers)
+        print(f"Total transformer blocks: {num_blocks}")
+        print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
+        
+        blocks_to_unfreeze = self.model.layers[-num_unfrozen_blocks:]
+        for block in blocks_to_unfreeze:
+            for param in block.parameters():
+                param.requires_grad = True
+        
+        # Count trainable parameters
+        trainable_params = sum(p.numel() for p in self.sam_model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.sam_model.parameters())
+        print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
+        
+        self.trainable_params = [p for p in self.sam_model.parameters() if p.requires_grad and p.is_leaf]
+        
+        # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
+        self.features_cache = {}
         
         # Override image size in config to avoid ValueError in patch_embed
         if self.standard_size != 1024:
             print(f"Resizing SAM vision encoder config to {self.standard_size}x{self.standard_size}")
-            self.model.vision_encoder.patch_embed.image_size = (self.standard_size, self.standard_size)
-            if hasattr(self.model.config, "vision_config"):
-                self.model.config.vision_config.image_size = self.standard_size
+            self.sam_model.vision_encoder.patch_embed.image_size = (self.standard_size, self.standard_size)
+            if hasattr(self.sam_model.config, "vision_config"):
+                self.sam_model.config.vision_config.image_size = self.standard_size
 
     def preprocess_image(self, image_path, target_size=None):
         """
@@ -78,123 +118,7 @@ class SAMFeatureExtractor:
         ])
         
         return resize_transform(img).unsqueeze(0).to(self.device)
-    
-    def get_embed_dim(self):
-        """Get the embedding dimension of the vision encoder."""
-        return self.model.config.vision_config.hidden_size
-
-    def extract_features(self, image_tensor):
-        """
-        Extracts dense features from the image using SAM's Vision Encoder.
         
-        Returns:
-            torch.Tensor: Feature map of shape (1, 256, H_feat, W_feat)
-        """
-        with torch.no_grad():
-            # SAM's get_image_embeddings does the forward pass through vision_encoder
-            # and the neck, returning the final 256-dim embedding.
-            # Output shape is typically (B, 256, 64, 64) for 1024x1024 input.
-            features = self.model.get_image_embeddings(pixel_values=image_tensor)
-            
-            # L2 Normalize features (critical for Cosine Similarity)
-            features = torch.nn.functional.normalize(features, dim=1)
-            
-            return features
-
-    def map_keypoints(self, keypoints, inverse=False):
-        """
-        Maps keypoints between image pixel coordinates and feature map coordinates.
-        SAM's scale factor is typically 16 (1024 pixels -> 64 features).
-        """
-        if not isinstance(keypoints, torch.Tensor):
-            keypoints = torch.tensor(keypoints, device=self.device)
-            
-        if inverse:
-            # Feature Grid -> Image Pixels
-            return keypoints * self.patch_size + (self.patch_size / 2)
-        else:
-            # Image Pixels -> Feature Grid
-            return keypoints / self.patch_size
-
-
-class SAMFineTuner:
-    """Fine-tuning trainer for SAM-based semantic correspondence by unfreezing last layers.
-    
-    Architecture for gradient flow:
-    - Pre-extracts INTERMEDIATE features from frozen blocks (cached to disk)
-    - During training, only the unfrozen blocks + neck are computed with gradients
-    - All images are resized to STANDARD_SIZE (1024x1024) for consistent feature maps
-    
-    This allows efficient training while maintaining proper gradient flow.
-    """
-    
-    def __init__(
-        self,
-        model_name='facebook/sam-vit-base',
-        device='cuda' if torch.cuda.is_available() else 'cpu',
-        num_unfrozen_blocks=2,
-        learning_rate=1e-5,
-        feature_extractor=None,
-    ):
-        """
-        Initialize the fine-tuner.
-        
-        Args:
-            model_name: SAM model variant to use
-            device: Device for computation
-            num_unfrozen_blocks: Number of transformer blocks to unfreeze from the end
-            learning_rate: Learning rate for training
-            feature_extractor: Optional pre-initialized SAMFeatureExtractor. If None,
-                               a new one will be created.
-        """
-        self.standard_size = STANDARD_SIZE
-        self.device = device
-        self.model_name = model_name
-        
-        # Use provided feature extractor or create a new one
-        if feature_extractor is not None:
-            self.feature_extractor = feature_extractor
-            self.sam_model = feature_extractor.model
-            # Ensure consistence
-            self.standard_size = feature_extractor.standard_size
-            print(f"Using provided SAMFeatureExtractor with size {self.standard_size}")
-        else:
-            self.feature_extractor = SAMFeatureExtractor(model_name=model_name, device=device)
-            self.sam_model = self.feature_extractor.model
-        
-        self.patch_size = self.feature_extractor.patch_size
-        self.embed_dim = self.feature_extractor.get_embed_dim()
-        
-        # Access the vision encoder
-        self.backbone = self.sam_model.vision_encoder
-        
-        # Store number of unfrozen blocks for feature caching logic
-        self.num_unfrozen_blocks = num_unfrozen_blocks
-        self.num_frozen_blocks = len(self.backbone.layers) - num_unfrozen_blocks
-        
-        # Freeze all parameters first
-        for param in self.sam_model.parameters():
-            param.requires_grad = False
-        
-        # Unfreeze the last N transformer blocks in the vision encoder
-        num_blocks = len(self.backbone.layers)
-        print(f"Total transformer blocks: {num_blocks}")
-        print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
-        
-        blocks_to_unfreeze = self.backbone.layers[-num_unfrozen_blocks:]
-        for block in blocks_to_unfreeze:
-            for param in block.parameters():
-                param.requires_grad = True
-        
-        # Count trainable parameters
-        trainable_params = sum(p.numel() for p in self.sam_model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.sam_model.parameters())
-        print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
-        
-        self.trainable_params = [p for p in self.sam_model.parameters() if p.requires_grad and p.is_leaf]
-        
-        # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
-        self.features_cache = {}
     
     def extract_intermediate_features(self, image_tensor):
         """
@@ -208,7 +132,7 @@ class SAMFineTuner:
         """
         with torch.no_grad():
             # Run patch embedding - SAM returns (B, H, W, C)
-            x = self.backbone.patch_embed(image_tensor)
+            x = self.model.patch_embed(image_tensor)
             
             # Keep spatial dimensions (B, H, W, C) - SAM layers expect this format
             # Note: SAM uses RELATIVE positional embeddings in the attention layers,
@@ -216,7 +140,7 @@ class SAMFineTuner:
             # The positional encoding is handled internally by each transformer block.
             
             # Run through FROZEN blocks only
-            for i, layer in enumerate(self.backbone.layers):
+            for i, layer in enumerate(self.model.layers):
                 if i >= self.num_frozen_blocks:
                     break
                 x = layer(x)
@@ -241,16 +165,16 @@ class SAMFineTuner:
         # Run through UNFROZEN blocks (input is already in B, H, W, C format)
         # Use slicing on ModuleList if possible, or iterate efficiently
         start_idx = self.num_frozen_blocks
-        for i in range(start_idx, len(self.backbone.layers)):
-            x = self.backbone.layers[i](x)
+        for i in range(start_idx, len(self.model.layers)):
+            x = self.model.layers[i](x)
         
         # Apply neck if present
-        if hasattr(self.backbone, 'neck') and hasattr(self.backbone.neck, '0'):
+        if hasattr(self.model, 'neck') and hasattr(self.model.neck, '0'):
             # x is (B, H, W, C), need to reshape to (B, C, H, W) for neck
             x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
             
             # Apply neck (Conv2d layers)
-            x = self.backbone.neck(x)
+            x = self.model.neck(x)
         else:
             # If no neck, just reshape from (B, H, W, C) to (B, C, H, W)
             x = x.permute(0, 3, 1, 2)
@@ -358,7 +282,7 @@ class SAMFineTuner:
     def save_checkpoint(self, path):
         """Save model checkpoint."""
         checkpoint = {
-            'backbone_state_dict': self.backbone.state_dict(),
+            'backbone_state_dict': self.model.state_dict(),
             'sam_model_state_dict': self.sam_model.state_dict(),
             'embed_dim': self.embed_dim,
             'patch_size': self.patch_size

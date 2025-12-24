@@ -6,8 +6,8 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 
 from src.dinov3_features import DINOv3FineTuner
-from src.dinov2_features import DINOv2FeatureExtractor, DINOv2FineTuner
-from src.sam_features import SAMFeatureExtractor, SAMFineTuner
+from src.dinov2_features import DINOv2FineTuner
+from src.sam_features import SAMFineTuner
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 from src.pck import compute_raw_distances
@@ -146,6 +146,7 @@ def fine_tune(args, model_type):
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
         )
+        print(fine_tuner.model_name)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
