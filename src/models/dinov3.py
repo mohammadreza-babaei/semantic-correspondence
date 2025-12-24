@@ -66,7 +66,6 @@ class DINOv3Adapter:
         # Feature caching setup
         self.num_unfrozen_blocks = num_unfrozen_blocks
         self.num_frozen_blocks = len(self.model.blocks) - num_unfrozen_blocks
-        self.features_cache = {}
         
         # 1. Freeze all parameters first
         for param in self.model.parameters():

@@ -72,10 +72,6 @@ class DINOv2Adapter:
         
         # Filter to ensure we only get leaf tensors that require grad
         self.trainable_params = [p for p in self.model.parameters() if p.requires_grad and p.is_leaf]
-        
-        # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
-        # These are the inputs to the unfrozen blocks
-        self.features_cache = {}
 
     def preprocess_image(self, image_path, target_size=None):
         """

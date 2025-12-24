@@ -73,9 +73,6 @@ class SAMAdapter:
         
         self.trainable_params = [p for p in self.sam_model.parameters() if p.requires_grad and p.is_leaf]
         
-        # Pre-extracted INTERMEDIATE features cache (output of frozen blocks)
-        self.features_cache = {}
-        
         # Override image size in config to avoid ValueError in patch_embed
         if self.standard_size != 1024:
             print(f"Resizing SAM vision encoder config to {self.standard_size}x{self.standard_size}")

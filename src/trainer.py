@@ -34,6 +34,7 @@ class Trainer():
         }
         self.fixed_lr = kwargs.get('fixed_lr', False)
         self.scheduler = None
+        self.features_cache = None
 
     def cache_intermediate_features(self, dataset):
         """Extract and save all intermediate features for the given dataset."""
@@ -47,14 +48,14 @@ class Trainer():
         if cache_file.exists():
             try:
                 print(f"Loading intermediate features from {cache_file}...")
-                self.model.features_cache = torch.load(cache_file, map_location='cpu')
-                print(f"Loaded {len(self.model.features_cache)} cached intermediate features from disk")
+                self.features_cache = torch.load(cache_file, map_location='cpu')
+                print(f"Loaded {len(self.features_cache)} cached intermediate features from disk")
                 print(f"Features stored in RAM (CPU memory)")
-                return self.model.features_cache
+                return self.features_cache
             except Exception as e:
                 print(f"Warning: Failed to load cache file: {e}")
                 print("Will re-extract features...")
-                self.model.features_cache = {}
+                self.features_cache = {}
         
         # Collect ALL unique images from the JPEGImages directory (all splits)
         print("Scanning all images in JPEGImages directory...")
@@ -76,7 +77,7 @@ class Trainer():
         iterator = tqdm(unique_images, desc="Extracting intermediate features") if show_progress else unique_images
         
         for img_name in iterator:
-            if img_name in self.model.features_cache:
+            if img_name in self.features_cache:
                 continue
             
             # Get image path
@@ -93,7 +94,7 @@ class Trainer():
             intermediate = self.extract_intermediate_features(img_tensor)
             
             # Store intermediate features in CPU memory (RAM) to save VRAM
-            self.model.features_cache[img_name] = {
+            self.features_cache[img_name] = {
                 'intermediate': intermediate.cpu(),  # Move to CPU: (1, H, W, C)
                 'orig_size': (orig_w, orig_h),
             }
@@ -116,15 +117,15 @@ class Trainer():
         trg_kps = batch['trg_kps']
         
         # Get cached INTERMEDIATE features (required)
-        if src_name not in self.model.features_cache or trg_name not in self.model.features_cache:
+        if src_name not in self.features_cache or trg_name not in self.features_cache:
             raise RuntimeError(f"Intermediate features not cached for {src_name} or {trg_name}. "
                              "Call extract_all_features() before training.")
         
         # Load intermediate features from CPU cache and move to GPU for computation
-        src_intermediate = self.model.features_cache[src_name]['intermediate'].to(self.device)
-        trg_intermediate = self.model.features_cache[trg_name]['intermediate'].to(self.device)
-        src_orig_w, src_orig_h = self.model.features_cache[src_name]['orig_size']
-        trg_orig_w, trg_orig_h = self.model.features_cache[trg_name]['orig_size']
+        src_intermediate = self.features_cache[src_name]['intermediate'].to(self.device)
+        trg_intermediate = self.features_cache[trg_name]['intermediate'].to(self.device)
+        src_orig_w, src_orig_h = self.features_cache[src_name]['orig_size']
+        trg_orig_w, trg_orig_h = self.features_cache[trg_name]['orig_size']
         
         # Run through UNFROZEN blocks (with gradients!)
         feat1 = self.model.forward_unfrozen_blocks(src_intermediate)
@@ -199,10 +200,10 @@ class Trainer():
         trg_kps = batch['trg_kps']
         
         # Load intermediate features from CPU cache and move to GPU for computation
-        src_intermediate = self.model.features_cache[src_name]['intermediate'].to(self.device)
-        trg_intermediate = self.model.features_cache[trg_name]['intermediate'].to(self.device)
-        src_orig_w, src_orig_h = self.model.features_cache[src_name]['orig_size']
-        trg_orig_w, trg_orig_h = self.model.features_cache[trg_name]['orig_size']
+        src_intermediate = self.features_cache[src_name]['intermediate'].to(self.device)
+        trg_intermediate = self.features_cache[trg_name]['intermediate'].to(self.device)
+        src_orig_w, src_orig_h = self.features_cache[src_name]['orig_size']
+        trg_orig_w, trg_orig_h = self.features_cache[trg_name]['orig_size']
         
         # Run through unfrozen blocks (no gradients in eval)
         with torch.no_grad():
@@ -294,7 +295,7 @@ class Trainer():
     
     def clear_features_cache(self):
         """Clear the features cache to free memory."""
-        self.model.features_cache = {}
+        self.features_cache = {}
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -433,7 +434,7 @@ class Trainer():
         print(f"Validation samples: {len(val_dataset) if val_dataset else 0}")
         print(f"Device: {self.device}")
         print(f"Accumulation steps: {accumulation_steps}")
-        print(f"Cached images: {len(self.model.features_cache)}")
+        print(f"Cached images: {len(self.features_cache)}")
         print(f"{'='*60}\n")
         
         best_val_loss = float('inf')
