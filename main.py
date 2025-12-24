@@ -44,6 +44,8 @@ def main():
                                   help="Path to custom model weights (.safetensors or .pth file)")
     fine_tune_parser.add_argument("--no-plot", action="store_true",
                                   help="Disable interactive plotting during training")
+    fine_tune_parser.add_argument("--no-shuffle", action="store_true",
+                                  help="Disable dataset shuffling during training")
     
     # WandB arguments
     fine_tune_parser.add_argument("--use-wandb", action="store_true",
@@ -168,7 +170,8 @@ def fine_tune(args, model_type):
         use_wandb=args.use_wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
-        accumulation_steps=args.accumulation_steps
+        accumulation_steps=args.accumulation_steps,
+        shuffle=not args.no_shuffle
     )
     
     # Plot final results

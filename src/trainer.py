@@ -359,6 +359,7 @@ class Trainer():
                 save_path: Path to save checkpoints (required)
                 max_iters_per_epoch: Maximum iterations per epoch (default: None for full epoch)
                 accumulation_steps: Number of steps to accumulate gradients (default: 1)
+                shuffle: Whether to shuffle the training dataset (default: True)
         
         Returns:
             history: Dictionary containing training history
@@ -371,6 +372,7 @@ class Trainer():
         save_path = kwargs.get('save_path')
         max_iters_per_epoch = kwargs.get('max_iters_per_epoch', None)
         accumulation_steps = kwargs.get('accumulation_steps', 1)
+        shuffle = kwargs.get('shuffle', True)
         
         # WandB Setup
         use_wandb = kwargs.get('use_wandb', False)
@@ -400,7 +402,7 @@ class Trainer():
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size, 
-            shuffle=True,
+            shuffle=shuffle,
             num_workers=0, 
             collate_fn=self._collate_fn
         )
