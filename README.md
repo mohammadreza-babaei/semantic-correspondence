@@ -82,7 +82,7 @@ python main.py fine_tune \
 | --- | --- | --- |
 | `--model-name` | Architecture to use. <br>
 
-**Choices:** `dinov2_vits14`, `dinov2_vitb14`, `dinov3_vits16`, `facebook/sam-vit-base`, `facebook/sam-vit-large`, `facebook/sam-vit-huge`| `dinov2_vits14`|
+**Choices:** `dinov2_vits14`, `dinov2_vitb14`, `dinov3_vits16`, `sam_vit_b`, `sam_vit_l`, `sam_vit_h`| `dinov2_vits14`|
 
 ---
 
