@@ -195,9 +195,6 @@ class DINOv2Adapter:
         
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
         
-        # L2 normalize features
-        feature_map = F.normalize(feature_map, dim=1)
-        
         return feature_map
     
     def save_checkpoint(self, path):

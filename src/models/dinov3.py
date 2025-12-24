@@ -193,7 +193,7 @@ class DINOv3Adapter:
         B, N, C = patch_tokens.shape
         
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
-        return F.normalize(feature_map, dim=1)
+        return feature_map
     
     def save_checkpoint(self, path):
         checkpoint = {

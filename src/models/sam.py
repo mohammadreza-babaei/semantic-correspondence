@@ -164,10 +164,7 @@ class SAMAdapter:
         x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
         x = self.model.neck(x)
         
-        # L2 normalize features
-        feature_map = F.normalize(x, dim=1)
-        
-        return feature_map
+        return x
     
     def save_checkpoint(self, path):
         """Save model checkpoint."""
