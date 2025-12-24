@@ -22,7 +22,7 @@ def main():
     fine_tune_parser.add_argument("--model-name", type=str, default="dinov2_vits14",
                                   choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 
                                            'dinov3_vits16',
-                                           'facebook/sam-vit-base', 'facebook/sam-vit-large', 'facebook/sam-vit-huge'],
+                                           'sam_vit_b', 'sam_vit_l', 'sam_vit_h'],
                                   help="Model variant to use (DINOv2, DINOv3, or SAM)")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
@@ -139,11 +139,10 @@ def fine_tune(args, model_type):
         )
     elif model_type == 'sam':
         fine_tuner = SAMAdapter(
-            model_name=args.model_name,
+            model_name=args.model_name.replace("sam_", ""),
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
         )
-        print(fine_tuner.model_name)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
