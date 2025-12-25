@@ -66,99 +66,6 @@ def predict_keypoints(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=
     
     return torch.stack([pred_x, pred_y], dim=-1)
 
-
-import torch
-import torch.nn.functional as F
-
-import torch
-import torch.nn.functional as F
-
-"""
-def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=None, 
-                             window_size=5, temperature=0.1):
-
-    Refined prediction using Window Soft-Argmax.
-
-    if trg_img_size is None:
-        trg_img_size = src_img_size
-    
-    B, C, H_src, W_src = src_feats.shape
-    _, _, H_trg, W_trg = trg_feats.shape
-    H_src_img, W_src_img = src_img_size
-
-    # --- 1. Extract Descriptors (Same as Global) ---
-    src_grid = src_kps.clone()
-    src_grid[:, :, 0] = 2.0 * (src_kps[:, :, 0] / (W_src_img - 1)) - 1.0
-    src_grid[:, :, 1] = 2.0 * (src_kps[:, :, 1] / (H_src_img - 1)) - 1.0
-    src_grid = src_grid.unsqueeze(1)
-
-    src_desc = F.grid_sample(src_feats, src_grid, mode='bilinear', align_corners=True).squeeze(2)
-
-    # --- 2. Compute Heatmaps (Same as Global) ---
-    src_vecs = F.normalize(src_desc.permute(0, 2, 1), p=2, dim=-1)
-    trg_vecs = F.normalize(trg_feats.view(B, C, -1), p=2, dim=1)
-    raw_heatmaps = torch.bmm(src_vecs, trg_vecs) 
-    heatmaps = raw_heatmaps.view(B, -1, H_trg, W_trg) # (B, N, H, W)
-
-    # --- 3. Window Refinement Logic ---
-    
-    # Find coarse peak (Hard Argmax)
-    flat_max_indices = torch.argmax(raw_heatmaps, dim=-1) # (B, N)
-    center_y = torch.div(flat_max_indices, W_trg, rounding_mode='floor') # Robust integer division
-    center_x = flat_max_indices % W_trg
-
-    radius = window_size // 2
-    pred_kps_pix = []
-
-    # Iterate batch and keypoints
-    for b in range(B):
-        kps_list_b = []
-        for n in range(src_kps.shape[1]):
-            cx, cy = center_x[b, n].item(), center_y[b, n].item()
-            
-            # Define window boundaries (clamped)
-            x_min = max(0, cx - radius)
-            x_max = min(W_trg, cx + radius + 1)
-            y_min = max(0, cy - radius)
-            y_max = min(H_trg, cy + radius + 1)
-            
-            # Extract patch
-            patch = heatmaps[b, n, y_min:y_max, x_min:x_max]
-            
-            # Numerical Stability: subtract max to prevent NaN in softmax
-            patch = patch - patch.max()
-            prob_patch = F.softmax(patch / temperature, dim=None)
-            
-            # Create local grid
-            # Critical: Ensure grid is on same device and dtype as prob_patch
-            grid_y, grid_x = torch.meshgrid(
-                torch.arange(y_min, y_max, device=patch.device, dtype=patch.dtype),
-                torch.arange(x_min, x_max, device=patch.device, dtype=patch.dtype),
-                indexing='ij'
-            )
-            
-            # Expectation (Center of Mass)
-            refined_x = torch.sum(grid_x * prob_patch)
-            refined_y = torch.sum(grid_y * prob_patch)
-            
-            kps_list_b.append(torch.stack([refined_x, refined_y]))
-        
-        pred_kps_pix.append(torch.stack(kps_list_b))
-
-    # Stack to (B, N, 2)
-    pred_kps_pix = torch.stack(pred_kps_pix)
-
-    # --- 4. Normalize to [-1, 1] ---
-    # This matches the output format of the global predict_keypoints function
-    pred_norm = pred_kps_pix.clone()
-    pred_norm[:, :, 0] = 2.0 * (pred_kps_pix[:, :, 0] / (W_trg - 1)) - 1.0
-    pred_norm[:, :, 1] = 2.0 * (pred_kps_pix[:, :, 1] / (H_trg - 1)) - 1.0
-    
-    return pred_norm
-"""
-import torch
-import torch.nn.functional as F
-
 def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=None, 
                              window_size=5, temperature=0.1):
     if trg_img_size is None:
@@ -177,9 +84,9 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
     src_desc = F.grid_sample(src_feats, src_grid, mode='bilinear', align_corners=True).squeeze(2)
 
     # --- 2. Compute Heatmaps ---
-    # DEBUG: Check for NaNs in features
+    # Check for NaNs in features
     if torch.isnan(src_feats).any() or torch.isnan(trg_feats).any():
-        print("!!! WARNING: NaNs detected in Input Features! Model has collapsed. !!!")
+        print("WARNING: NaNs detected in Input Features! Model has collapsed.")
         
     src_vecs = F.normalize(src_desc.permute(0, 2, 1), p=2, dim=-1)
     trg_vecs = F.normalize(trg_feats.view(B, C, -1), p=2, dim=1)
@@ -210,13 +117,13 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
             # 1. Numerical Stability (subtract max)
             patch = patch - patch.max()
             
-            # 2. FLATTEN before Softmax (Crucial Fix)
+            # 2. FLATTEN before Softmax 
             # We want the probability to sum to 1 over the WHOLE patch, not just rows.
             flat_patch = patch.view(-1) 
             prob_flat = F.softmax(flat_patch / temperature, dim=0)
             prob_patch = prob_flat.view_as(patch) # Reshape back to (H, W)
             
-            # --- Check for NaNs (Keep this from the debug version) ---
+            # Check for NaNs
             if torch.isnan(prob_patch).any():
                  # Fallback
                 refined_x, refined_y = torch.tensor(float(cx)), torch.tensor(float(cy))
@@ -237,11 +144,10 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
 
     pred_kps_pix = torch.stack(pred_kps_pix)
 
-    # --- DEBUG PRINT ---
     # Print stats of the first point in batch to monitor training
     # Only print once every ~100 calls to avoid spam, or on error
     if torch.isnan(pred_kps_pix).any():
-        print("!!! Output Coordinates contain NaNs !!!")
+        print("Output Coordinates contain NaNs")
     
     # Normalize
     pred_norm = pred_kps_pix.clone()
