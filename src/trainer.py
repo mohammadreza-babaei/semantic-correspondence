@@ -11,7 +11,7 @@ import os
 import csv
 import wandb
 
-from src.new_loss import loss as the_new_loss, predict_keypoints
+from src.new_loss import loss as the_new_loss, predict_keypoints, predict_keypoints_window
 from src.pck import compute_pck_from_batch
 
 from src.plotting import plot_training_history  
@@ -25,7 +25,8 @@ class Trainer():
         self.history = {
             'train_loss': [],
             'val_loss': [],
-            'val_pck': [],
+            'val_pck_global': [],  # Changed from single 'val_pck'
+            'val_pck_window': [],  # Added window version
             'epoch_train_losses': [],
             'learning_rates': []
         }
@@ -181,7 +182,7 @@ class Trainer():
         src_kps_batch = src_kps_vis.unsqueeze(0)
         trg_kps_batch = trg_kps_vis.unsqueeze(0)
         
-        # Compute loss - same as training for consistent metrics
+       # Compute loss (Standard logic)
         with torch.no_grad():
             loss = the_new_loss(
                 feat1, feat2, 
@@ -192,33 +193,41 @@ class Trainer():
             )
 
         # -------------------------------------------------------------------------
-        # 4. CALCULATE PCK
+        # COMPARE: GLOBAL vs WINDOW
         # -------------------------------------------------------------------------
-        # We need to predict ALL keypoints (even invisible ones) to match the batch shape
-        # Input: The SCALED keypoints (all N of them)
-        src_kps_all_scaled = src_kps[:, :2].unsqueeze(0) # (1, N, 2)
+        # Input: The SCALED keypoints (1, N, 2)
+        src_kps_all_scaled = src_kps[:, :2].unsqueeze(0) 
         
         with torch.no_grad():
-            # Get predictions in Normalized [-1, 1] range
-            pred_kps_norm = predict_keypoints(
-                feat1, feat2, 
-                src_kps_all_scaled,
+            # 1. Global Prediction (Baseline)
+            pred_global_norm = predict_keypoints(
+                feat1, feat2, src_kps_all_scaled,
+                src_img_size=(self.model.standard_size, self.model.standard_size),
+                temperature=0.1
+            )
+
+            # 2. Window Prediction (Refined)
+            pred_window_norm = predict_keypoints_window(
+                feat1, feat2, src_kps_all_scaled,
                 src_img_size=(self.model.standard_size, self.model.standard_size),
                 temperature=0.1
             )
             
-        # Denormalize predictions back to ORIGINAL image size for PCK evaluation
-        # Formula: (norm + 1) / 2 * (size - 1)
-        pred_kps_orig = pred_kps_norm.clone()
-        pred_kps_orig[..., 0] = (pred_kps_norm[..., 0] + 1) / 2 * (trg_orig_w - 1)
-        pred_kps_orig[..., 1] = (pred_kps_norm[..., 1] + 1) / 2 * (trg_orig_h - 1)
+        # Helper to denormalize and calculate PCK
+        def get_pck(pred_norm):
+            # Denormalize back to ORIGINAL image size
+            pred_orig = pred_norm.clone()
+            pred_orig[..., 0] = (pred_norm[..., 0] + 1) / 2 * (trg_orig_w - 1)
+            pred_orig[..., 1] = (pred_norm[..., 1] + 1) / 2 * (trg_orig_h - 1)
+            pred_orig = pred_orig.squeeze(0).cpu()
+            
+            score, _ = compute_pck_from_batch(batch, pred_orig, alpha=0.1)
+            return score
+
+        pck_global = get_pck(pred_global_norm)
+        pck_window = get_pck(pred_window_norm)
         
-        pred_kps_orig = pred_kps_orig.squeeze(0).cpu() # (N, 2)
-        
-        # Calculate PCK
-        pck, _ = compute_pck_from_batch(batch, pred_kps_orig, alpha=0.1)
-        
-        return loss.item(), pck
+        return loss.item(), pck_global, pck_window
 
 
     
@@ -340,7 +349,7 @@ class Trainer():
         # Initialize CSV
         with open(csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'batch', 'train_loss', 'val_loss', 'val_pck'])
+            writer.writerow(['epoch', 'batch', 'train_loss', 'val_loss', 'pck_global', 'pck_window'])
 
         # CSV SETUP - TRAIN ------------
         csv_filename = f"training_log_e{epochs}_b{batch_size}.csv"
@@ -420,36 +429,41 @@ class Trainer():
                     "epoch": epoch
                 })
             
-            # Validation phase + PCK implemented
+            # Validation phase
             val_loss = None
-            val_pck = None
+            val_pck_g = None
+            val_pck_w = None
+            
             if val_loader is not None:
                 self.model.backbone.eval()
                 val_losses = []
-                val_pcks = []
+                val_pcks_g = [] # Global
+                val_pcks_w = [] # Window
 
                 for batch_idx, batch in enumerate(val_loader):
                     if batch_idx >= max_iters:
                         break
 
-                    # unpack the new tuple
-                    v_loss, v_pck = self.val_step(batch)
+                    # Unpack 3 values now
+                    v_loss, v_pck_g, v_pck_w = self.val_step(batch)
 
                     val_losses.append(v_loss)
-                    val_pcks.append(v_pck)
+                    val_pcks_g.append(v_pck_g)
+                    val_pcks_w.append(v_pck_w)
 
-                # Calculation of the mean for each batch
-                # but for now we save the single values of the loss and pck for each batch 
                 val_loss = np.mean(val_losses)
-                val_pck = np.mean(val_pcks)
+                val_pck_g = np.mean(val_pcks_g)
+                val_pck_w = np.mean(val_pcks_w)
 
                 self.history['val_loss'].append(val_loss)
-                self.history['val_pck'].append(val_pck)
+                self.history['val_pck_global'].append(val_pck_g)
+                self.history['val_pck_window'].append(val_pck_w)
 
                 if use_wandb:
                     wandb.log({
                         "val/loss": val_loss,
-                        "val/pck": val_pck,
+                        "val/pck_global": val_pck_g,
+                        "val/pck_window": val_pck_w, # Compare these in WandB UI
                         "epoch": epoch
                     })
 
@@ -463,12 +477,9 @@ class Trainer():
                 # Write to CSV - PCK
                 with open(csv_path, 'a', newline='') as f:
                     writer = csv.writer(f)
-
                     counter_batch = 1
-
-                    # Save the single values of loss and pck for each batch
-                    for loss, pck in zip(val_losses, val_pcks):
-                        writer.writerow([epoch + 1, counter_batch, train_loss, loss, pck])
+                    for loss, pg, pw in zip(val_losses, val_pcks_g, val_pcks_w):
+                        writer.writerow([epoch + 1, counter_batch, train_loss, loss, pg, pw])
                         counter_batch += 1
             
             # write to CSV - TRAIN
@@ -483,8 +494,8 @@ class Trainer():
             print(f"  Train Loss: {train_loss:.4f}")
             if val_loss is not None:
                 print(f"  Val Loss:   {val_loss:.4f}")
-            print(f"{'─'*40}\n")
-            
+                print(f"  PCK Global: {val_pck_g:.4f}")
+                print(f"  PCK Window: {val_pck_w:.4f}")
             print(f"{'─'*40}\n")
             
             self.model.save_checkpoint(f"{save_path}/epoch_{epoch+1}.pt")
