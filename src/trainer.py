@@ -466,6 +466,7 @@ class Trainer():
         accumulation_steps = kwargs.get('accumulation_steps', 1)
         shuffle = kwargs.get('shuffle', True)
         num_augmentations = kwargs.get('num_augmentations', 3)
+        plot_every_epoch = kwargs.get('plot_every_epoch', True)
         
         # WandB Setup
         use_wandb = kwargs.get('use_wandb', False)
@@ -672,7 +673,8 @@ class Trainer():
                     best_val_loss = val_loss
                     self.model.save_checkpoint(f"{save_path}/best_model.pt")
 
-                plot_training_history(self.history, save_path=f"{save_path}/training_curves_{epoch+1}.png")
+                if plot_every_epoch:
+                    plot_training_history(self.history, save_path=f"{save_path}/training_curves_{epoch+1}.png")
 
                 # Write to CSV - PCK
                 with open(csv_path, 'a', newline='') as f:

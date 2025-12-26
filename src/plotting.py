@@ -57,6 +57,7 @@ def plot_training_history(history, save_path=None):
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"Plot saved to: {save_path}")
     
+    plt.close(fig)
     return fig
 
 def _update_plots(history, fig, axes, current_epoch):
