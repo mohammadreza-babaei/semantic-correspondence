@@ -10,8 +10,8 @@ from pathlib import Path
 import os
 
 # Standard image size for DINOv3 feature extraction. 
-# 528 = 16 * 33 (closest multiple of 16 to the 518 used in DINOv2)
-STANDARD_SIZE = 528 
+# 512 = 16 * 32 (closest multiple of 16 to the 518 used in DINOv2)
+STANDARD_SIZE = 512 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 WEIGHTS_PATH = os.path.join(script_dir, "model.safetensors")
 MODEL_NAME = "dinov3_vits16"                   
