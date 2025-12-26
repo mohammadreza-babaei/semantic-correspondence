@@ -43,7 +43,6 @@ def get_position_preserving_augmentations():
         ], p=0.3),
         T.RandomGrayscale(p=0.2),
         T.RandomApply([GaussianNoise(std=0.05)], p=0.2),
-        T.RandomInvert(p=0.05),  # Simple color inversion
         T.RandomAdjustSharpness(sharpness_factor=2, p=0.2),
     ])
 
