@@ -72,6 +72,8 @@ def main():
                              help="Explicit path to .pt file (overrides save-path)")
     eval_parser.add_argument("--alpha", type=float, default=0.1,
                              help="coefficient that defines the range of acceptance")
+    eval_parser.add_argument("--split", type=str, default="test", choices=["test", "val"], 
+                             help="Dataset split to evaluate on (test or val)")
     
     args = parser.parse_args()
 
@@ -204,7 +206,7 @@ def evaluate(args):
     
     # 1. Load Data
     dataset_path = args.dataset_path or os.environ.get('SPAIR_URL', './data')
-    test_dataset = SPair71kPairs(root=dataset_path, split='test')
+    eval_dataset = SPair71kPairs(root=dataset_path, split=args.split)
     
     # 2. Initialize Adapter (Architecture)
     # We must match the class names from your uploaded files (DINOv2Adapter, DINOv3Adapter, SAMAdapter)
@@ -253,13 +255,13 @@ def evaluate(args):
     )
 
     # 5. Extract Features (Required for the pipeline)
-    print("\nPre-extracting features for Test Set...")
-    trainer.cache_intermediate_features(test_dataset)
+    print(f"\nPre-extracting features for {args.split.capitalize()} Set...")
+    trainer.cache_intermediate_features(eval_dataset)
     
     # 6. Create Dataloader
     # Trainer has the correct collate_fn
-    test_loader = DataLoader(
-        test_dataset, 
+    eval_loader = DataLoader(
+        eval_dataset, 
         batch_size=1, 
         shuffle=False, 
         num_workers=0, 
@@ -270,8 +272,8 @@ def evaluate(args):
     # Pass the TRAINER to the evaluator
     evaluator = PCKEvaluator(trainer=trainer, device=device)
     
-    results_file = f"metrics/test_results_{args.model_name}_alpha{args.alpha}.csv"
-    evaluator.evaluate(test_loader, results_file, alpha=args.alpha)
+    results_file = f"metrics/{args.split}_results_{args.model_name}_alpha{args.alpha}.csv"
+    evaluator.evaluate(eval_loader, results_file, alpha=args.alpha)
     
     # 8. Print Summary
     evaluator.summarize_results(results_file, args.alpha)

@@ -11,12 +11,14 @@ def main():
                         help="Alpha threshold used during evaluation (e.g., 0.1)")
     parser.add_argument("--output", type=str, default=None, 
                         help="Optional path to save the summary table as CSV")
+    parser.add_argument("--input", type=str, default=None, 
+                        help="Optional path to load the summary table as CSV")
     
     args = parser.parse_args()
 
     # Convention: metrics/test_results_{model_name}_alpha{alpha}.csv
-    filename = f"test_results_{args.model_name}_{args.alpha}.csv"
-    csv_path = os.path.join("metrics", filename)
+    if args.input is not None:
+        csv_path = args.input
 
     if not os.path.exists(csv_path):
         print(f"Error: Could not find results file at: {csv_path}")
@@ -41,16 +43,16 @@ def main():
 
     # Metric 1: Per-Keypoint PCK (Global & Per Category)
     # Formula: Total Correct Points / Total Visible Points
-    global_pck_kps = df['is_correct'].mean()
-    cat_pck_kps = df.groupby('category')['is_correct'].mean()
+    global_pck_kps = df['is_correct_global'].mean()
+    cat_pck_kps = df.groupby('category')['is_correct_global'].mean()
     # ---------------------------------------------------------
     # Metric 2: Per-Image PCK (Global & Per Category)
     # Formula: Average of (Correct / Visible) for each image pair
     # grouped by pair_idx (and category to keep the label)
-    img_scores = df.groupby(['pair_idx', 'category'])['is_correct'].mean().reset_index()
+    img_scores = df.groupby(['pair_idx', 'category'])['is_correct_global'].mean().reset_index()
     
-    global_pck_img = img_scores['is_correct'].mean()
-    cat_pck_img = img_scores.groupby('category')['is_correct'].mean()
+    global_pck_img = img_scores['is_correct_global'].mean()
+    cat_pck_img = img_scores.groupby('category')['is_correct_global'].mean()
 
     # Assemble Final Table
     summary = pd.DataFrame({
