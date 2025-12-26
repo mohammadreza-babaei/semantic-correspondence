@@ -11,6 +11,7 @@ import os
 import csv
 import wandb
 from tqdm import tqdm
+from src.evaluator import PCKEvaluator
 
 
 from src.new_loss import loss as the_new_loss, predict_keypoints, predict_keypoints_window
@@ -35,6 +36,9 @@ class Trainer():
         self.fixed_lr = kwargs.get('fixed_lr', False)
         self.scheduler = None
         self.features_cache = None
+
+        # Initialize Evaluator for validation consistency
+        self.evaluator = PCKEvaluator(self.model, self.device)
 
     def cache_intermediate_features(self, dataset):
         """Extract and save all intermediate features for the given dataset.
@@ -220,117 +224,80 @@ class Trainer():
         
         return loss.item()
     
+
     def val_step(self, batch):
-        """Single validation step using cached intermediate features.
-        
-        Uses the same loss function as training for consistent metrics.
-        
-        Args:
-            batch: Dictionary containing 'src_name', 'trg_name', 'src_kps', 'trg_kps'
-        """
         self.model.model.eval()
         
-        # Get image names and keypoints
         src_name = batch['src_name']
         trg_name = batch['trg_name']
         src_kps = batch['src_kps']
         trg_kps = batch['trg_kps']
         
-        # Load cached INTERMEDIATE features from disk (lazy loading)
+        # Load cached features
         src_data = self._load_cached_features(src_name)
         trg_data = self._load_cached_features(trg_name)
         
-        # Move to GPU for computation
         src_intermediate = src_data['intermediate'].to(self.device)
         trg_intermediate = trg_data['intermediate'].to(self.device)
         src_orig_w, src_orig_h = src_data['orig_size']
         trg_orig_w, trg_orig_h = trg_data['orig_size']
         
-        # Run through unfrozen blocks (no gradients in eval)
+        # Forward pass (unfrozen blocks)
         with torch.no_grad():
             feat1 = self.model.forward_unfrozen_blocks(src_intermediate)
             feat2 = self.model.forward_unfrozen_blocks(trg_intermediate)
         
-        # Convert keypoints to tensors
+        # Prepare Keypoints (Original -> Standard)
         if not isinstance(src_kps, torch.Tensor):
             src_kps = torch.tensor(src_kps, dtype=torch.float32)
             trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
         
-        # Scale keypoints from original image size to standard_size
-        src_kps = src_kps.clone()
-        src_kps[:, 0] = src_kps[:, 0] * (self.model.standard_size / src_orig_w)
-        src_kps[:, 1] = src_kps[:, 1] * (self.model.standard_size / src_orig_h)
+        src_kps_std = src_kps.clone()
+        src_kps_std[:, 0] = src_kps[:, 0] * (self.model.standard_size / src_orig_w)
+        src_kps_std[:, 1] = src_kps[:, 1] * (self.model.standard_size / src_orig_h)
         
-        trg_kps = trg_kps.clone()
-        trg_kps[:, 0] = trg_kps[:, 0] * (self.model.standard_size / trg_orig_w)
-        trg_kps[:, 1] = trg_kps[:, 1] * (self.model.standard_size / trg_orig_h)
+        trg_kps_std = trg_kps.clone()
+        trg_kps_std[:, 0] = trg_kps[:, 0] * (self.model.standard_size / trg_orig_w)
+        trg_kps_std[:, 1] = trg_kps[:, 1] * (self.model.standard_size / trg_orig_h)
         
-        src_kps = src_kps.to(self.device)
-        trg_kps = trg_kps.to(self.device)
+        src_kps_std = src_kps_std.to(self.device)
+        trg_kps_std = trg_kps_std.to(self.device)
         
-        # Handle visibility: skip invisible keypoints
-        if src_kps.shape[-1] == 3:
-            vis = (src_kps[:, 2] > 0) & (trg_kps[:, 2] > 0)
-            src_kps_vis = src_kps[vis, :2]
-            trg_kps_vis = trg_kps[vis, :2]
+        # 1. Compute Loss (Standard logic)
+        # Filter for visibility for Loss calculation
+        if src_kps_std.shape[-1] == 3:
+            vis = (src_kps_std[:, 2] > 0) & (trg_kps_std[:, 2] > 0)
+            src_kps_vis = src_kps_std[vis, :2]
+            trg_kps_vis = trg_kps_std[vis, :2]
         else:
-            src_kps_vis = src_kps[:, :2] if src_kps.shape[-1] > 2 else src_kps
-            trg_kps_vis = trg_kps[:, :2] if trg_kps.shape[-1] > 2 else trg_kps
-        
-        if len(src_kps_vis) == 0:
-            return 0.0
-        
-        # Add batch dimension to keypoints: (N, 2) -> (1, N, 2)
-        src_kps_batch = src_kps_vis.unsqueeze(0)
-        trg_kps_batch = trg_kps_vis.unsqueeze(0)
-        
-       # Compute loss (Standard logic)
-        with torch.no_grad():
-            loss = the_new_loss(
-                feat1, feat2, 
-                src_kps_batch, trg_kps_batch, 
-                src_img_size=(self.model.standard_size, self.model.standard_size),
-                trg_img_size=(self.model.standard_size, self.model.standard_size),
-                temperature=0.1
-            )
-
-        # -------------------------------------------------------------------------
-        # COMPARE: GLOBAL vs WINDOW
-        # -------------------------------------------------------------------------
-        # Input: The SCALED keypoints (1, N, 2)
-        src_kps_all_scaled = src_kps[:, :2].unsqueeze(0) 
-        
-        with torch.no_grad():
-            # 1. Global Prediction (Baseline)
-            pred_global_norm = predict_keypoints(
-                feat1, feat2, src_kps_all_scaled,
-                src_img_size=(self.model.standard_size, self.model.standard_size),
-                temperature=0.1
-            )
-
-            # 2. Window Prediction (Refined)
-            pred_window_norm = predict_keypoints_window(
-                feat1, feat2, src_kps_all_scaled,
-                src_img_size=(self.model.standard_size, self.model.standard_size),
-                temperature=0.1
-            )
+            src_kps_vis = src_kps_std
+            trg_kps_vis = trg_kps_std
             
-        # Helper to denormalize and calculate PCK
-        def get_pck(pred_norm):
-            # Denormalize back to ORIGINAL image size
-            pred_orig = pred_norm.clone()
-            pred_orig[..., 0] = (pred_norm[..., 0] + 1) / 2 * (trg_orig_w - 1)
-            pred_orig[..., 1] = (pred_norm[..., 1] + 1) / 2 * (trg_orig_h - 1)
-            pred_orig = pred_orig.squeeze(0).cpu()
-            
-            score, _ = compute_pck_from_batch(batch, pred_orig, alpha=0.1)
-            return score
+        with torch.no_grad():
+            if len(src_kps_vis) > 0:
+                loss = the_new_loss(
+                    feat1, feat2, 
+                    src_kps_vis.unsqueeze(0), trg_kps_vis.unsqueeze(0), 
+                    src_img_size=(self.model.standard_size, self.model.standard_size),
+                    trg_img_size=(self.model.standard_size, self.model.standard_size),
+                    temperature=0.1
+                )
+                loss_val = loss.item()
+            else:
+                loss_val = 0.0
 
-        pck_global = get_pck(pred_global_norm)
-        pck_window = get_pck(pred_window_norm)
+        # 2. Compute PCK using Evaluator (Consistency!)
+        # Pass the Standard-Size keypoints and the Target Original Size for denormalization
+        trg_sizes = [(trg_orig_w, trg_orig_h)] # Batch size 1 assumption
         
-        return loss.item(), pck_global, pck_window
-
+        # We pass only the XY coordinates of the scaled source keypoints
+        src_kps_xy = src_kps_std[:, :2]
+        
+        pck_global, pck_window = self.evaluator.compute_metrics_with_sizes(
+            feat1, feat2, src_kps_xy, batch, trg_sizes, alpha=0.1
+        )
+        
+        return loss_val, pck_global, pck_window
 
     
     

@@ -189,12 +189,12 @@ def fine_tune(args, model_type):
 
 def evaluate(args):
     """
-    Standalone evaluation function using PCKEvaluator.
+    Standalone evaluation function using PCKEvaluator with Adapter support.
     """
     if args is None: return
 
     print("="*60)
-    print("STARTING EVALUATION")
+    print(f"STARTING EVALUATION: {args.model_name}")
     print("="*60)
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -203,37 +203,75 @@ def evaluate(args):
     dataset_path = args.dataset_path or os.environ.get('SPAIR_URL', './data')
     test_dataset = SPair71kPairs(root=dataset_path, split='test')
     
-    # 2. Rebuild the model 
+    # 2. Initialize Adapter (Architecture)
+    # We must match the class names from your uploaded files (DINOv2Adapter, DINOv3Adapter, SAMAdapter)
     if "dinov2" in args.model_name:
-        fine_tuner = DINOv2FineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+        adapter = DINOv2Adapter(
+            model_name=args.model_name,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=None # We load weights manually below
+        )
     elif "dinov3" in args.model_name:
-        fine_tuner = DINOv3FineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+        adapter = DINOv3Adapter(
+            model_name=args.model_name,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=None
+        )
     elif "sam" in args.model_name:
-        fine_tuner = SAMFineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+        # SAMAdapter might require initial weights in init to build the model, 
+        # but we overwrite them with our checkpoint anyway.
+        # Assuming you have base weights downloaded as per SAM instructions.
+        # For simplicity, passing None if the class allows, or a placeholder.
+        # Ideally, point to base weights if required by SAMAdapter __init__.
+        adapter = SAMAdapter(
+            model_name=args.model_name.replace("sam_", ""), # 'vit_b', etc.
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path="models/sam_vit_b_01ec64.pth" if args.weights_path is None else None # Placeholder
+        )
+    else:
+        raise ValueError(f"Unknown model: {args.model_name}")
     
-    # 3. Load Weights
+    # 3. Load Trained Weights
     checkpoint_path = args.weights_path if args.weights_path else f"{args.save_path}/best_model.pt"
     if os.path.exists(checkpoint_path):
-        fine_tuner.load_checkpoint(checkpoint_path)
+        adapter.load_checkpoint(checkpoint_path)
     else:
-        print(f"Warning: No checkpoint found at {checkpoint_path}")
+        print(f"Warning: No checkpoint found at {checkpoint_path}. Using random/base weights.")
 
-    # 4. Extract Features (Required for the pipeline)
-    print("\nPre-extracting features...")
-    fine_tuner.extract_all_features(test_dataset)
+    # 4. Initialize Trainer (Wrapper for Caching)
+    # The PCKEvaluator needs the trainer to access the feature cache.
+    trainer = Trainer(
+        model=adapter,
+        device=device,
+        num_unfrozen_blocks=args.num_unfrozen_blocks
+    )
+
+    # 5. Extract Features (Required for the pipeline)
+    print("\nPre-extracting features for Test Set...")
+    trainer.cache_intermediate_features(test_dataset)
     
-    # 5. Create Dataloader
-    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, 
-                             num_workers=0, collate_fn=fine_tuner._collate_fn)
+    # 6. Create Dataloader
+    # Trainer has the correct collate_fn
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=1, 
+        shuffle=False, 
+        num_workers=0, 
+        collate_fn=trainer._collate_fn
+    )
     
-    # 6. Run Evaluation using the new Class
-    evaluator = PCKEvaluator(model=fine_tuner, device=device)
+    # 7. Run Evaluation using PCKEvaluator
+    # Pass the TRAINER to the evaluator
+    evaluator = PCKEvaluator(trainer=trainer, device=device)
     
-    results_file = f"metrics/test_results_{args.model_name}_{args.alpha}.csv"
+    results_file = f"metrics/test_results_{args.model_name}_alpha{args.alpha}.csv"
     evaluator.evaluate(test_loader, results_file, alpha=args.alpha)
     
-    # 7. Print Summary
-    evaluator.summarize_results(results_file,args.alpha)
+    # 8. Print Summary
+    evaluator.summarize_results(results_file, args.alpha)
 
 
 
