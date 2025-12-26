@@ -176,7 +176,7 @@ cython_debug/
 
 # Ignore the entire data folder (raw images, jsons, and extracted tar files)
 data/SPair-71k
-data/ap10k
+data/ap-10k
 
 checkpoints/
 
