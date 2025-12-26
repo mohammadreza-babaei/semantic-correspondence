@@ -4,31 +4,82 @@ import os
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+import pandas as pd
 
-from src.new_loss import predict_keypoints
+# Import the helpers
+from src.new_loss import predict_keypoints, predict_keypoints_window
+from src.pck import compute_pck_from_batch
 
 class PCKEvaluator:
-    def __init__(self, model, device):
+    def __init__(self, trainer, device):
         """
         Args:
-            model: The FineTuner model instance (must have features_cache and forward_unfrozen_blocks).
+            trainer: The Trainer instance (holds .features_cache and .model).
             device: 'cuda' or 'cpu'.
         """
-        self.model = model
+        self.trainer = trainer
+        self.model = trainer.model # The adapter
         self.device = device
-        # Use the model's configured standard size (e.g., 518 for DINOv2, 512 for DINOv3)
-        self.standard_size = getattr(model, 'standard_size', 518)
+        # Use the model's configured standard size (e.g., 518 or 528)
+        self.standard_size = getattr(self.model, 'standard_size', 518)
+
+    def compute_metrics_with_sizes(self, feat1, feat2, src_kps_std, batch, trg_sizes, alpha=0.1):
+        """
+        Pure calculation method used by Trainer.val_step().
+        Takes pre-extracted features and computes scalar PCK scores (Global & Window).
+        """
+        # Ensure inputs are on correct device and dimensions
+        src_input = src_kps_std.to(self.device)
+        if src_input.dim() == 2: 
+            src_input = src_input.unsqueeze(0)
+
+        with torch.no_grad():
+            # 1. Global Prediction
+            pred_g_norm = predict_keypoints(
+                feat1, feat2, src_input,
+                src_img_size=(self.standard_size, self.standard_size),
+                temperature=0.1
+            )
+            # 2. Window Prediction
+            pred_w_norm = predict_keypoints_window(
+                feat1, feat2, src_input,
+                src_img_size=(self.standard_size, self.standard_size),
+                temperature=0.1
+            )
+
+        # Accumulators
+        pck_g_accum = 0.0
+        pck_w_accum = 0.0
+        B = len(trg_sizes)
+
+        for i in range(B):
+            w, h = trg_sizes[i]
+            
+            # Helper to denorm single item: [-1, 1] -> [0, w]
+            def denorm(p_norm):
+                p = p_norm[i].clone() # (N, 2)
+                p[:, 0] = (p[:, 0] + 1) / 2 * (w - 1)
+                p[:, 1] = (p[:, 1] + 1) / 2 * (h - 1)
+                return p.cpu()
+
+            pred_g_orig = denorm(pred_g_norm)
+            pred_w_orig = denorm(pred_w_norm)
+
+            # Use shared PCK logic from src/pck.py
+            score_g, _ = compute_pck_from_batch(batch, pred_g_orig, alpha)
+            score_w, _ = compute_pck_from_batch(batch, pred_w_orig, alpha)
+            
+            pck_g_accum += score_g
+            pck_w_accum += score_w
+        
+        return pck_g_accum / B, pck_w_accum / B
 
     def evaluate(self, dataloader, output_path, alpha=0.1):
         """
-        Runs evaluation on the dataloader and saves detailed results to CSV.
-        
-        Args:
-            dataloader: DataLoader for the test set (batch_size=1 recommended).
-            output_path: Path to save the 'test_raw_detailed.csv'.
-            alpha: Threshold factor for PCK (default 0.1).
+        Runs full evaluation loop (Evaluation Phase).
+        Loads features from cache, computes metrics, and writes detailed CSV rows.
         """
-        self.model.backbone.eval()
+        self.model.model.eval()
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -40,9 +91,13 @@ class PCKEvaluator:
         # Open CSV for writing
         with open(output_path, 'w', newline='') as f:
             writer = csv.writer(f)
-            # Header matching your requirement for detailed analysis
-            writer.writerow(['pair_idx', 'src_img', 'trg_img', 'category', 'kps_idx', 
-                             'pixel_error', 'bbox_size', 'threshold', 'is_correct', 'is_visible'])
+            # Detailed Header
+            writer.writerow([
+                'pair_idx', 'src_img', 'trg_img', 'category', 'kps_idx', 
+                'bbox_size', 'threshold', 'is_visible',
+                'pixel_error_global', 'is_correct_global', 
+                'pixel_error_window', 'is_correct_window'
+            ])
 
             with torch.no_grad():
                 for batch_idx, batch in enumerate(tqdm(dataloader, desc="Eval")):
@@ -53,7 +108,7 @@ class PCKEvaluator:
 
     def _process_batch(self, batch, batch_idx, writer, alpha):
         """
-        Internal method to process a single batch using the Explicit Geometric Pipeline.
+        Internal method for evaluate() loop. Handles data loading and CSV logging.
         """
         # Unpack Metadata (Handle batch_size=1 or >1)
         src_names = batch['src_name']
@@ -62,22 +117,20 @@ class PCKEvaluator:
         trg_kps_raw = batch['trg_kps']   # (B, N, 2)
         trg_bbox = batch['trg_bndbox']   # (B, 4)
         
-        # Determine batch size dynamically
         B = len(src_names) if isinstance(src_names, list) else 1
         
         # Iterate through items in the batch
         for i in range(B):
-            # Handle list vs string unpacking
             s_name = src_names[i] if B > 1 else src_names
             t_name = trg_names[i] if B > 1 else trg_names
             
-            # Retrieve Cache
-            if s_name not in self.model.features_cache or t_name not in self.model.features_cache:
-                print(f"Warning: Cache missing for {s_name} or {t_name}. Skipping.")
+            # Use Disk Loader
+            try:
+                cache_src = self.trainer._load_cached_features(s_name)
+                cache_trg = self.trainer._load_cached_features(t_name)
+            except RuntimeError:
+                print(f"Warning: Cache file missing for {s_name} or {t_name}. Skipping.")
                 continue
-                
-            cache_src = self.model.features_cache[s_name]
-            cache_trg = self.model.features_cache[t_name]
             
             src_orig_w, src_orig_h = cache_src['orig_size']
             trg_orig_w, trg_orig_h = cache_trg['orig_size']
@@ -86,10 +139,14 @@ class PCKEvaluator:
             src_inter = cache_src['intermediate'].to(self.device)
             trg_inter = cache_trg['intermediate'].to(self.device)
             
-            # Add batch dim if missing (cache stores 1, N, C usually)
-            if src_inter.dim() == 2: src_inter = src_inter.unsqueeze(0)
-            if trg_inter.dim() == 2: trg_inter = trg_inter.unsqueeze(0)
-            
+            # --- FIX: Only unsqueeze if it is missing a batch dim entirely (Dim=2) ---
+            # Your cache already saves with batch dim 1, so src_inter is typically (1, N, C)
+            if src_inter.dim() == 2: 
+                src_inter = src_inter.unsqueeze(0)
+            if trg_inter.dim() == 2: 
+                trg_inter = trg_inter.unsqueeze(0)
+            # ------------------------------------------------------------------------
+
             feat1 = self.model.forward_unfrozen_blocks(src_inter)
             feat2 = self.model.forward_unfrozen_blocks(trg_inter)
             
@@ -102,81 +159,104 @@ class PCKEvaluator:
             src_kps_std = curr_src_kps.clone()
             src_kps_std[:, 0] *= (self.standard_size / src_orig_w)
             src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
-            src_kps_std = src_kps_std.to(self.device).unsqueeze(0) # (1, N, 2)
+            src_input = src_kps_std.to(self.device).unsqueeze(0)
             
-            # Predict (returns [-1, 1])
-            pred_kps_norm = predict_keypoints(
-                feat1, feat2, src_kps_std,
+            # Predict (Both Methods)
+            pred_global_norm = predict_keypoints(
+                feat1, feat2, src_input,
+                src_img_size=(self.standard_size, self.standard_size),
+                temperature=0.1
+            )
+            pred_window_norm = predict_keypoints_window(
+                feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
                 temperature=0.1
             )
             
             # Scale Prediction: [-1, 1] -> Target Original
-            pred_kps_orig = pred_kps_norm.clone()
-            pred_kps_orig[..., 0] = (pred_kps_norm[..., 0] + 1) / 2 * (trg_orig_w - 1)
-            pred_kps_orig[..., 1] = (pred_kps_norm[..., 1] + 1) / 2 * (trg_orig_h - 1)
-            pred_kps_orig = pred_kps_orig.squeeze(0).cpu() # (N, 2)
+            def denorm(p_norm):
+                p = p_norm.clone()
+                p[..., 0] = (p_norm[..., 0] + 1) / 2 * (trg_orig_w - 1)
+                p[..., 1] = (p_norm[..., 1] + 1) / 2 * (trg_orig_h - 1)
+                return p.squeeze(0).cpu()
+
+            pred_global_orig = denorm(pred_global_norm)
+            pred_window_orig = denorm(pred_window_norm)
             
             # Compute Errors
             curr_trg_kps = trg_kps_raw[i] if B > 1 else trg_kps_raw
             if not isinstance(curr_trg_kps, torch.Tensor):
                 curr_trg_kps = torch.tensor(curr_trg_kps)
                 
-            distances = torch.norm(pred_kps_orig - curr_trg_kps, dim=-1)
+            dist_global = torch.norm(pred_global_orig - curr_trg_kps, dim=-1)
+            dist_window = torch.norm(pred_window_orig - curr_trg_kps, dim=-1)
             
             # Compute Threshold (BBox)
             curr_bbox = trg_bbox[i] if B > 1 else trg_bbox
             if not isinstance(curr_bbox, torch.Tensor): curr_bbox = torch.tensor(curr_bbox)
-            
-            bbox_w = curr_bbox[2] - curr_bbox[0]
-            bbox_h = curr_bbox[3] - curr_bbox[1]
-            bbox_size = max(bbox_w, bbox_h).item()
+            bbox_size = max(curr_bbox[2]-curr_bbox[0], curr_bbox[3]-curr_bbox[1]).item()
             threshold = alpha * bbox_size
             
             # Logging to CSV
             category = batch['category'][i] if (B > 1 and 'category' in batch) else batch.get('category', 'unknown')
-            if isinstance(category, list): category = category[0] # Handle weird batching cases
+            if isinstance(category, list): category = category[0]
             
-            num_kps = distances.shape[0]
+            num_kps = dist_global.shape[0]
             for k in range(num_kps):
-                err = distances[k].item()
+                err_g = dist_global[k].item()
+                err_w = dist_window[k].item()
                 is_visible = (curr_trg_kps[k, 0] > 0) and (curr_trg_kps[k, 1] > 0)
-                is_correct = (err <= threshold) and is_visible
+                is_correct_g = (err_g <= threshold) and is_visible
+                is_correct_w = (err_w <= threshold) and is_visible
                 
                 if is_visible:
                     writer.writerow([
                         batch_idx, s_name, t_name, category, k, 
-                        f"{err:.4f}", f"{bbox_size:.2f}", f"{threshold:.4f}", 
-                        int(is_correct), int(is_visible)
+                        f"{bbox_size:.2f}", f"{threshold:.4f}", int(is_visible),
+                        f"{err_g:.4f}", int(is_correct_g),
+                        f"{err_w:.4f}", int(is_correct_w)
                     ])
 
     def summarize_results(self, csv_path, alpha):
         """
-        Reads the generated CSV and prints summary metrics.
+        Reads the generated CSV and prints summary metrics for both methods.
         """
-        import pandas as pd
         if not os.path.exists(csv_path):
             print("CSV not found.")
             return
 
-        print("\n" + "-"*40)
-        print("COMPUTING SUMMARY METRICS")
-        print("-" * 40)
+        print("\n" + "-"*60)
+        print(f"COMPUTING SUMMARY METRICS (Alpha={alpha})")
+        print("-" * 60)
         
-        df = pd.read_csv(csv_path)
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            print(f"Error reading CSV: {e}")
+            return
+            
+        if len(df) == 0:
+            print("CSV is empty.")
+            return
+
+        if 'is_visible' in df.columns:
+            df = df[df['is_visible'] == 1]
         
-        df = df[df['is_visible'] == 1]
+        # 1. Global Metrics
+        pck_kps_g = df['is_correct_global'].mean()
+        img_scores_g = df.groupby(['pair_idx', 'src_img'])['is_correct_global'].mean()
+        pck_img_g = img_scores_g.mean()
         
-        #PCK Per Keypoint (Total Correct / Total Visible)
-        pck_kps = df['is_correct'].mean()
-        
-        # PCK Per Image (Mean of (Correct/Visible) per image)
-        # Group by image pairs
-        img_scores = df.groupby(['pair_idx', 'src_img'])['is_correct'].mean()
-        pck_img = img_scores.mean()
+        # 2. Window Metrics
+        pck_kps_w = df['is_correct_window'].mean()
+        img_scores_w = df.groupby(['pair_idx', 'src_img'])['is_correct_window'].mean()
+        pck_img_w = img_scores_w.mean()
         
         print(f"Total Keypoints Evaluated: {len(df)}")
-        print(f"Total Images Evaluated:    {len(img_scores)}")
-        print(f"\nPCK @ {alpha} (Per Keypoint):  {pck_kps:.2%}")
-        print(f"PCK @ {alpha} (Per Image):     {pck_img:.2%}")
-        print("-" * 40)
+        print(f"Total Images Evaluated:    {len(img_scores_g)}")
+        print("-" * 60)
+        print(f"{'METRIC':<20} | {'GLOBAL':<10} | {'WINDOW':<10} | {'DELTA':<10}")
+        print("-" * 60)
+        print(f"{'PCK (Per Keypoint)':<20} | {pck_kps_g:.2%}     | {pck_kps_w:.2%}     | {pck_kps_w - pck_kps_g:+.2%}")
+        print(f"{'PCK (Per Image)':<20} | {pck_img_g:.2%}     | {pck_img_w:.2%}     | {pck_img_w - pck_img_g:+.2%}")
+        print("-" * 60)
