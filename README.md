@@ -4,6 +4,9 @@
 Can be downloaded from https://cvlab.postech.ac.kr/research/SPair-71k/. It must be unzipped in the ./data folder
 Or you can use the script `data/prepare_spair.sh` to download and unzip it.
 
+## AP10k
+Can be downloaded from https://github.com/AlexTheBad/AP-10K?tab=readme-ov-file#download. It must be unzipped in the ./data folder
+
 # Semantic Correspondence Fine-Tuning CLI
 
 This tool provides a command-line interface (CLI) for fine-tuning **DINOv2**, **DINOv3**, and **SAM** (Segment Anything Model) for semantic correspondence tasks using the **SPair-71k** dataset.
@@ -91,7 +94,11 @@ python main.py fine_tune \
 Your `--dataset-path` should point to a folder structured like this:
 
 ```
-/path/to/SPair-71k/
-├── JPEGImages/      # Contains category folders (cat, dog, etc.)
-└── PairAnnotation/  # Contains train/test split folders
+/path/to/your/dataset/
+├──SPair-71k/
+|  ├── JPEGImages/      # Contains category folders (cat, dog, etc.)
+|  └── PairAnnotation/  # Contains train/test split folders
+└──ap10k/
+   ├── annotations/      # Contains category folders (cat, dog, etc.)
+   └── data/  # Contains train/test split folders
 ```
