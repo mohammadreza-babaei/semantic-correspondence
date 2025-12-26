@@ -56,6 +56,8 @@ def main():
                                   help="WandB project name")
     fine_tune_parser.add_argument("--wandb-run-name", type=str, default=None,
                                   help="WandB run name (optional)")
+    fine_tune_parser.add_argument("--num-augmentations", type=int, default=3,
+                                  help="Number of augmented versions to cache per image (0 to disable)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
 
@@ -176,7 +178,8 @@ def fine_tune(args, model_type):
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
         accumulation_steps=args.accumulation_steps,
-        shuffle=not args.no_shuffle
+        shuffle=not args.no_shuffle,
+        num_augmentations=args.num_augmentations
     )
     
     # Plot final results
