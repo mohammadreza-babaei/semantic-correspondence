@@ -448,9 +448,9 @@ class Trainer():
         os.makedirs(save_path, exist_ok=True)
 
         # --- CSV SETUP - PCK ---
-        metrics_dir = Path("metrics")
-        metrics_dir.mkdir(exist_ok=True)
-        csv_path = metrics_dir / "val_metrics.csv"
+        model_name_clean = self.model.model_name.replace('/', '_')
+        csv_filename = f"val_metrics_{model_name_clean}_e{epochs}_b{batch_size}.csv"
+        csv_path = Path(save_path) / csv_filename
         
         # Initialize CSV
         with open(csv_path, 'w', newline='') as f:
