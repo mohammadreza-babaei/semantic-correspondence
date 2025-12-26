@@ -46,7 +46,7 @@ class DINOv2Adapter:
             self.model = torch.hub.load('facebookresearch/dinov2', model_name, pretrained=False).to(self.device)
             
             print(f"Loading custom weights from: {weights_path}")
-            state_dict = torch.load(weights_path, map_location='cpu')
+            state_dict = torch.load(weights_path, map_location='cpu', weights_only=False)
             
             # Clean state dictionary keys to handle various prefixes
             new_state_dict = {}
@@ -197,18 +197,20 @@ class DINOv2Adapter:
         
         return feature_map
     
-    def save_checkpoint(self, path):
-        """Save model checkpoint."""
-        checkpoint = {
-            'backbone_state_dict': self.model.state_dict(),
-            'embed_dim': self.model.embed_dim,
-            'patch_size': self.patch_size
+    def get_model_state(self):
+        """Returns the dictionary containing model weights and metadata."""
+        return {
+            "backbone_state_dict": self.model.state_dict(),
+            "embed_dim": self.model.embed_dim,
+            "patch_size": self.patch_size,
+            "model_name": self.model_name
         }
-        torch.save(checkpoint, path)
-        print(f"Checkpoint saved: {path}")
     
-    def load_checkpoint(self, path):
-        """Load model checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['backbone_state_dict'])
-        print(f"Checkpoint loaded: {path}")
+    def load_model_state(self, state_dict):
+        """Restores model weights from a state dictionary."""
+        # Handle cases where the full checkpoint bundle is passed
+        if "backbone_state_dict" in state_dict:
+            self.model.load_state_dict(state_dict["backbone_state_dict"])
+        else:
+            self.model.load_state_dict(state_dict)
+        print(f"Model state loaded for {self.model_name}")

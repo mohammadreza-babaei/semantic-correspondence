@@ -13,6 +13,7 @@ import wandb
 import random
 from tqdm import tqdm
 from src.evaluator import PCKEvaluator
+import gc
 
 
 class GaussianNoise:
@@ -72,6 +73,50 @@ class Trainer():
 
         # Initialize Evaluator for validation consistency
         self.evaluator = PCKEvaluator(self.model, self.device)
+        self.best_val_loss = float('inf')
+        self.start_epoch = 0
+
+    def save_checkpoint(self, path, epoch, best_val_loss):
+        """Save full training checkpoint for resumption."""
+        checkpoint = {
+            'epoch': epoch,
+            'model_state': self.model.get_model_state(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+            'history': self.history,
+            'best_val_loss': best_val_loss,
+            'learning_rate': self.learning_rate,
+            'fixed_lr': self.fixed_lr
+        }
+        torch.save(checkpoint, path)
+        print(f"Full checkpoint saved: {path}")
+
+    def load_checkpoint(self, path):
+        """Load full training checkpoint and restore state."""
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Checkpoint not found: {path}")
+        
+        print(f"Loading checkpoint from: {path}")
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        
+        # Restore model
+        self.model.load_model_state(checkpoint['model_state'])
+        
+        # Restore history and metrics
+        self.history = checkpoint.get('history', self.history)
+        self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        self.start_epoch = checkpoint.get('epoch', 0)
+        self.learning_rate = checkpoint.get('learning_rate', self.learning_rate)
+        self.fixed_lr = checkpoint.get('fixed_lr', self.fixed_lr)
+        
+        # We don't restore optimizer/scheduler here because they need the model parameters
+        # which were just updated, and they are typically initialized in train().
+        # We store their states to be applied after initialization.
+        self._deferred_optimizer_state = checkpoint.get('optimizer_state_dict')
+        self._deferred_scheduler_state = checkpoint.get('scheduler_state_dict')
+        
+        print(f"Checkpoint loaded. Resuming from epoch {self.start_epoch + 1}")
+        return self.start_epoch
 
     def cache_intermediate_features(self, dataset, num_augmentations=3):
         """Extract and save all intermediate features for the given dataset.
@@ -112,53 +157,93 @@ class Trainer():
         
         print(f"Found {len(unique_images)} unique images across all splits")
         
-        # Count already cached images (original + augmented)
-        to_extract_original = []
-        to_extract_augmented = []  # List of (img_name, aug_idx) tuples
+        # 1. Pre-scan cache directory to avoid thousands of file system calls
+        print(f"Scanning cache directory: {cache_dir}")
+        existing_files = set()
+        if cache_dir.exists():
+            for f in cache_dir.glob('*.pt'):
+                existing_files.add(f.name)
+        print(f"Found {len(existing_files)} already cached files.")
+
+        # 2. Identify missing tasks without building huge lists
+        # We'll use a generator approach or just iterate directly
+        
+        # Calculate totals for progress bars (still need some counting, but lightweight)
+        total_original = len(unique_images)
+        total_augmented = len(unique_images) * num_augmentations
+        
+        # Count missing (fast integer math, no string list storage if possible, 
+        # but for tqdm we might want a simple count first)
+        missing_original_count = 0
+        missing_augmented_count = 0
         
         for img_name in unique_images:
             # Check original
-            cache_path = cache_dir / f"{img_name.replace('/', '_')}.pt"
-            if not cache_path.exists():
-                to_extract_original.append(img_name)
+            fname = f"{img_name.replace('/', '_')}.pt"
+            if fname not in existing_files:
+                missing_original_count += 1
             
-            # Check augmented versions
+            # Check augmented
             for aug_idx in range(num_augmentations):
-                aug_cache_path = cache_dir / f"{img_name.replace('/', '_')}_aug{aug_idx}.pt"
-                if not aug_cache_path.exists():
-                    to_extract_augmented.append((img_name, aug_idx))
+                fname_aug = f"{img_name.replace('/', '_')}_aug{aug_idx}.pt"
+                if fname_aug not in existing_files:
+                    missing_augmented_count += 1
+
+        print(f"Original features to extract: {missing_original_count}/{total_original}")
+        print(f"Augmented features to extract: {missing_augmented_count}/{total_augmented}")
         
-        total_original = len(unique_images)
-        total_augmented = len(unique_images) * num_augmentations
-        already_cached_original = total_original - len(to_extract_original)
-        already_cached_augmented = total_augmented - len(to_extract_augmented)
-        
-        print(f"Original: {already_cached_original}/{total_original} cached, {len(to_extract_original)} to extract")
-        print(f"Augmented: {already_cached_augmented}/{total_augmented} cached, {len(to_extract_augmented)} to extract")
-        
-        if len(to_extract_original) == 0 and len(to_extract_augmented) == 0:
+        if missing_original_count == 0 and missing_augmented_count == 0:
             print("All features already cached!")
             return
         
         print(f"Extracting intermediate features at {self.model.standard_size}x{self.model.standard_size}...")
         
-        # Extract ORIGINAL features
-        if len(to_extract_original) > 0:
-            iterator = tqdm(to_extract_original, desc="Extracting original features")
-            for img_name in iterator:
+        # 3. Extract ORIGINAL features
+        if missing_original_count > 0:
+            pbar = tqdm(total=missing_original_count, desc="Extracting original features")
+            processed_count = 0
+            for img_name in unique_images:
+                fname = f"{img_name.replace('/', '_')}.pt"
+                if fname in existing_files:
+                    continue
+                
                 self._extract_and_cache_single(dataset, img_name, cache_dir)
+                pbar.update(1)
+                
+                # Periodic GC
+                processed_count += 1
+                if processed_count % 100 == 0:
+                    gc.collect()
+            pbar.close()
         
-        # Extract AUGMENTED features
-        if len(to_extract_augmented) > 0:
-            iterator = tqdm(to_extract_augmented, desc="Extracting augmented features")
-            for img_name, aug_idx in iterator:
-                self._extract_and_cache_single(dataset, img_name, cache_dir, 
-                                               augment_transform=augment_transform, 
-                                               aug_idx=aug_idx)
+        # 4. Extract AUGMENTED features
+        if missing_augmented_count > 0:
+            pbar = tqdm(total=missing_augmented_count, desc="Extracting augmented features")
+            processed_count = 0
+            
+            # To avoid nested loops in the main flow that might confuse logic,
+            # we iterate images and then augmentations.
+            for img_name in unique_images:
+                for aug_idx in range(num_augmentations):
+                    fname_aug = f"{img_name.replace('/', '_')}_aug{aug_idx}.pt"
+                    if fname_aug in existing_files:
+                        continue
+                        
+                    self._extract_and_cache_single(dataset, img_name, cache_dir, 
+                                                   augment_transform=augment_transform, 
+                                                   aug_idx=aug_idx)
+                    pbar.update(1)
+                    
+                    # Periodic GC
+                    processed_count += 1
+                    if processed_count % 100 == 0:
+                        gc.collect()
+            pbar.close()
         
-        # Clear CUDA cache after extraction
+        # Final GC output
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        gc.collect()
         
         print(f"Cached features to {cache_dir}")
     
@@ -508,6 +593,17 @@ class Trainer():
             T_max=total_steps
         )
         
+        # Restore optimizer and scheduler states if resuming
+        if hasattr(self, '_deferred_optimizer_state') and self._deferred_optimizer_state:
+            self.optimizer.load_state_dict(self._deferred_optimizer_state)
+            print("Optimizer state restored.")
+            del self._deferred_optimizer_state
+            
+        if hasattr(self, '_deferred_scheduler_state') and self._deferred_scheduler_state and self.scheduler:
+            self.scheduler.load_state_dict(self._deferred_scheduler_state)
+            print("Scheduler state restored.")
+            del self._deferred_scheduler_state
+
         # Create output directory
         os.makedirs(save_path, exist_ok=True)
 
@@ -516,27 +612,32 @@ class Trainer():
         csv_filename = f"val_metrics_{model_name_clean}_e{epochs}_b{batch_size}.csv"
         csv_path = Path(save_path) / csv_filename
         
-        # Initialize CSV
-        with open(csv_path, 'w', newline='') as f:
+        # Initialize or append CSV
+        file_mode = 'a' if self.start_epoch > 0 and csv_path.exists() else 'w'
+        with open(csv_path, file_mode, newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch', 'batch', 'train_loss', 'val_loss', 'pck_global', 'pck_window'])
+            if file_mode == 'w':
+                writer.writerow(['epoch', 'batch', 'train_loss', 'val_loss', 'pck_global', 'pck_window'])
 
         # CSV SETUP for TRAIN 
         csv_filename = f"training_log_e{epochs}_b{batch_size}.csv"
         csv_file_path = os.path.join(save_path, csv_filename)
-                
-        # Create file and write header
-        with open(csv_file_path, 'w', newline='') as f:
+        
+        # Initialize or append CSV
+        file_mode = 'a' if self.start_epoch > 0 and os.path.exists(csv_file_path) else 'w'
+        with open(csv_file_path, file_mode, newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['Epoch', 'Train Loss', 'Val Loss', 'Learning Rate'])
+            if file_mode == 'w':
+                writer.writerow(['Epoch', 'Train Loss', 'Val Loss', 'Learning Rate'])
             
         print(f"Saving metrics (PCK) to {csv_path}")
         print(f"Logging metrics (TRAIN) to: {csv_file_path}")
         
         print(f"\n{'='*60}")
-        print(f"Starting Training")
+        print(f"Starting Training{' (Resumed)' if self.start_epoch > 0 else ''}")
         print(f"{'='*60}")
         print(f"Epochs: {epochs}")
+        print(f"Current Epoch: {self.start_epoch + 1}")
         print(f"Training samples: {len(train_dataset)}")
         print(f"Validation samples: {len(val_dataset) if val_dataset else 0}")
         print(f"Device: {self.device}")
@@ -545,9 +646,10 @@ class Trainer():
         print(f"Cached images: {cached_count}")
         print(f"{'='*60}\n")
         
-        best_val_loss = float('inf')
+        best_val_loss = self.best_val_loss
+        best_val_pck = getattr(self, 'best_val_pck', 0.0)
         
-        for epoch in range(epochs):
+        for epoch in range(self.start_epoch, epochs):
             # Training phase
             self.model.model.train()
             epoch_losses = []
@@ -638,10 +740,18 @@ class Trainer():
                         "epoch": epoch
                     })
 
-                # Save best model
+                # Save best model by validation loss
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    self.model.save_checkpoint(f"{save_path}/best_model.pt")
+                    self.save_checkpoint(f"{save_path}/best_model_loss.pt", epoch, best_val_loss)
+                    print(f"New best val loss: {val_loss:.4f}")
+                
+                # Save best model by PCK (use window PCK as primary metric)
+                if val_pck_w > best_val_pck:
+                    best_val_pck = val_pck_w
+                    self.best_val_pck = best_val_pck
+                    self.save_checkpoint(f"{save_path}/best_model_pck.pt", epoch, best_val_loss)
+                    print(f"New best PCK (window): {val_pck_w:.4f}")
 
                 if plot_every_epoch:
                     plot_training_history(self.history, save_path=f"{save_path}/training_curves_{epoch+1}.png")
@@ -670,7 +780,14 @@ class Trainer():
                 print(f"  PCK Window: {val_pck_w:.4f}")
             print(f"{'─'*40}\n")
             
-            self.model.save_checkpoint(f"{save_path}/epoch_{epoch+1}.pt")
+            self.save_checkpoint(f"{save_path}/epoch_{epoch+1}.pt", epoch + 1, best_val_loss)
+            
+            # Cleanup: keep only last 3 epoch checkpoints
+            epoch_files = sorted(Path(save_path).glob('epoch_*.pt'), 
+                                 key=lambda x: int(x.stem.split('_')[1]))
+            for old_ckpt in epoch_files[:-3]:
+                old_ckpt.unlink()
+                print(f"Removed old checkpoint: {old_ckpt.name}")
         
         if use_wandb:
             wandb.finish()

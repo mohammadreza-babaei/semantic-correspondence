@@ -43,7 +43,7 @@ class DINOv3Adapter:
         self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
 
         # 2. Load Weights (.pth)
-        state_dict = torch.load(weights_path, map_location='cpu')
+        state_dict = torch.load(weights_path, map_location="cpu", weights_only=False)
 
         # 3. Clean Keys
         new_state_dict = {}
@@ -189,16 +189,20 @@ class DINOv3Adapter:
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
         return feature_map
     
-    def save_checkpoint(self, path):
-        checkpoint = {
-            'backbone_state_dict': self.model.state_dict(),
-            'embed_dim': self.model.embed_dim,
-            'patch_size': self.patch_size
+    def get_model_state(self):
+        """Returns the dictionary containing model weights and metadata."""
+        return {
+            "backbone_state_dict": self.model.state_dict(),
+            "embed_dim": self.model.embed_dim,
+            "patch_size": self.patch_size,
+            "model_name": self.model_name
         }
-        torch.save(checkpoint, path)
-        print(f"Checkpoint saved: {path}")
     
-    def load_checkpoint(self, path):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['backbone_state_dict'])
-        print(f"Checkpoint loaded: {path}")
+    def load_model_state(self, state_dict):
+        """Restores model weights from a state dictionary."""
+        # Handle cases where the full checkpoint bundle is passed
+        if "backbone_state_dict" in state_dict:
+            self.model.load_state_dict(state_dict["backbone_state_dict"])
+        else:
+            self.model.load_state_dict(state_dict)
+        print(f"Model state loaded for {self.model_name}")

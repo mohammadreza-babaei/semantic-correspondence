@@ -166,18 +166,23 @@ class SAMAdapter:
         
         return x
     
-    def save_checkpoint(self, path):
-        """Save model checkpoint."""
-        checkpoint = {
-            'backbone_state_dict': self.model.state_dict(),
-            'sam_model_state_dict': self.sam_model.state_dict(),
-            'patch_size': self.patch_size
+    def get_model_state(self):
+        """Returns the dictionary containing model weights and metadata."""
+        return {
+            "backbone_state_dict": self.model.state_dict(),
+            "sam_model_state_dict": self.sam_model.state_dict(),
+            "patch_size": self.patch_size,
+            "model_name": self.model_name
         }
-        torch.save(checkpoint, path)
-        print(f"Checkpoint saved: {path}")
     
-    def load_checkpoint(self, path):
-        """Load model checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.sam_model.load_state_dict(checkpoint['sam_model_state_dict'])
-        print(f"Checkpoint loaded: {path}")
+    def load_model_state(self, state_dict):
+        """Restores model weights from a state dictionary."""
+        # Handle cases where the full checkpoint bundle is passed
+        if "sam_model_state_dict" in state_dict:
+            self.sam_model.load_state_dict(state_dict["sam_model_state_dict"])
+        elif "backbone_state_dict" in state_dict:
+            # Fallback for old backbone-only checkpoints if they exist
+            self.model.load_state_dict(state_dict["backbone_state_dict"])
+        else:
+            self.sam_model.load_state_dict(state_dict)
+        print(f"Model state loaded for {self.model_name}")

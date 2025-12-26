@@ -58,6 +58,8 @@ def main():
                                   help="WandB run name (optional)")
     fine_tune_parser.add_argument("--num-augmentations", type=int, default=3,
                                   help="Number of augmented versions to cache per image (0 to disable)")
+    fine_tune_parser.add_argument("--resume", type=str, default=None,
+                                  help="Path to checkpoint to resume training from (e.g. checkpoints/best_model.pt)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
 
@@ -165,6 +167,11 @@ def fine_tune(args, model_type):
         fixed_lr=args.fixed_lr,
     )
     
+    # Resume training if requested
+    if args.resume:
+        print(f"\nResuming training from: {args.resume}")
+        model.load_checkpoint(args.resume)
+    
     # Run training
     print("\nStarting training...")
     history = model.train(
@@ -242,7 +249,14 @@ def evaluate(args):
     # 3. Load Trained Weights
     checkpoint_path = args.weights_path if args.weights_path else f"{args.save_path}/best_model.pt"
     if os.path.exists(checkpoint_path):
-        adapter.load_checkpoint(checkpoint_path)
+        print(f"Loading weights from: {checkpoint_path}")
+        # Use torch.load to get the dictionary first
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        # Adapt to our new format if it's a full checkpoint
+        if 'model_state' in checkpoint:
+            adapter.load_model_state(checkpoint['model_state'])
+        else:
+            adapter.load_model_state(checkpoint)
     else:
         print(f"Warning: No checkpoint found at {checkpoint_path}. Using random/base weights.")
 
