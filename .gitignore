@@ -185,3 +185,5 @@ metrics/
 wandb/
 data/SPair-71k.tar
 data/SPair-71k.tar.gz
+img_test/
+

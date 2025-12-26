@@ -1,5 +1,6 @@
 import argparse
 import os
+import csv
 import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
@@ -9,6 +10,9 @@ from src.dinov2_features import DINOv2FeatureExtractor, DINOv2FineTuner
 from src.sam_features import SAMFeatureExtractor, SAMFineTuner
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
+from src.pck import compute_raw_distances
+from src.evaluator import PCKEvaluator
+
 
 def main():
     parser = argparse.ArgumentParser(description="Semantic Correspondence CLI")
@@ -54,6 +58,18 @@ def main():
                                   help="WandB run name (optional)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
+
+    # We duplicate these args because 'eval' needs to know the architecture to load
+    eval_parser.add_argument("--model-name", type=str, required=True,
+                             help="Model variant to evaluate (must match the checkpoint)")
+    eval_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
+                             help="Must match the training configuration")
+    eval_parser.add_argument("--save-path", type=str, default="checkpoints/finetuned_dinov2",
+                             help="Folder containing 'best_model.pt'")
+    eval_parser.add_argument("--weights-path", type=str, default=None,
+                             help="Explicit path to .pt file (overrides save-path)")
+    eval_parser.add_argument("--alpha", type=float, default=0.1,
+                             help="coefficient that defines the range of acceptance")
     
     args = parser.parse_args()
 
@@ -78,7 +94,7 @@ def main():
     if args.command == "fine_tune":
         fine_tune(args, model_type)
     elif args.command == "eval":
-        evaluate()
+        evaluate(args)
 
 
 def fine_tune(args, model_type):
@@ -166,8 +182,57 @@ def fine_tune(args, model_type):
     print("="*60)
     
 
-def evaluate():
-    print("Evaluation logic goes here.")
+def evaluate(args):
+    """
+    Standalone evaluation function using PCKEvaluator.
+    """
+    if args is None: return
+
+    print("="*60)
+    print("STARTING EVALUATION")
+    print("="*60)
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # 1. Load Data
+    dataset_path = args.dataset_path or os.environ.get('SPAIR_URL', './data')
+    test_dataset = SPair71kPairs(root=dataset_path, split='test')
+    
+    # 2. Rebuild the model 
+    if "dinov2" in args.model_name:
+        fine_tuner = DINOv2FineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+    elif "dinov3" in args.model_name:
+        fine_tuner = DINOv3FineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+    elif "sam" in args.model_name:
+        fine_tuner = SAMFineTuner(model_name=args.model_name, device=device, num_unfrozen_blocks=args.num_unfrozen_blocks)
+    
+    # 3. Load Weights
+    checkpoint_path = args.weights_path if args.weights_path else f"{args.save_path}/best_model.pt"
+    if os.path.exists(checkpoint_path):
+        fine_tuner.load_checkpoint(checkpoint_path)
+    else:
+        print(f"Warning: No checkpoint found at {checkpoint_path}")
+
+    # 4. Extract Features (Required for the pipeline)
+    print("\nPre-extracting features...")
+    fine_tuner.extract_all_features(test_dataset)
+    
+    # 5. Create Dataloader
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, 
+                             num_workers=0, collate_fn=fine_tuner._collate_fn)
+    
+    # 6. Run Evaluation using the new Class
+    evaluator = PCKEvaluator(model=fine_tuner, device=device)
+    
+    results_file = f"metrics/test_results_{args.model_name}_{args.alpha}.csv"
+    evaluator.evaluate(test_loader, results_file, alpha=args.alpha)
+    
+    # 7. Print Summary
+    evaluator.summarize_results(results_file,args.alpha)
+
+
+
+
 
 if __name__ == "__main__":
     main()
