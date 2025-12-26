@@ -5,8 +5,6 @@ import os
 
 def main():
     parser = argparse.ArgumentParser(description="Compute PCK metrics per category.")
-    
-    # Updated arguments to match your request
     parser.add_argument("--model-name", type=str, required=True, 
                         help="Model name used during evaluation (e.g., dinov2_vits14)")
     parser.add_argument("--alpha", type=float, default=0.1, 
@@ -16,7 +14,6 @@ def main():
     
     args = parser.parse_args()
 
-    # 1. Automatically build the path based on the convention defined in main.py
     # Convention: metrics/test_results_{model_name}_alpha{alpha}.csv
     filename = f"test_results_{args.model_name}_{args.alpha}.csv"
     csv_path = os.path.join("metrics", filename)
@@ -34,7 +31,7 @@ def main():
         print(f"Error reading CSV: {e}")
         sys.exit(1)
 
-    # 2. Filter for Visible Keypoints Only
+    # Filter for Visible Keypoints Only
     if 'is_visible' in df.columns:
         n_total = len(df)
         df = df[df['is_visible'] == 1]
@@ -42,26 +39,20 @@ def main():
     else:
         print("Warning: 'is_visible' column not found. Assuming all rows are visible.")
 
-    # ---------------------------------------------------------
     # Metric 1: Per-Keypoint PCK (Global & Per Category)
     # Formula: Total Correct Points / Total Visible Points
-    # ---------------------------------------------------------
     global_pck_kps = df['is_correct'].mean()
     cat_pck_kps = df.groupby('category')['is_correct'].mean()
-
     # ---------------------------------------------------------
     # Metric 2: Per-Image PCK (Global & Per Category)
     # Formula: Average of (Correct / Visible) for each image pair
-    # ---------------------------------------------------------
-    # We group by pair_idx (and category to keep the label)
+    # grouped by pair_idx (and category to keep the label)
     img_scores = df.groupby(['pair_idx', 'category'])['is_correct'].mean().reset_index()
     
     global_pck_img = img_scores['is_correct'].mean()
     cat_pck_img = img_scores.groupby('category')['is_correct'].mean()
 
-    # ---------------------------------------------------------
     # Assemble Final Table
-    # ---------------------------------------------------------
     summary = pd.DataFrame({
         'PCK_Keypoint': cat_pck_kps,
         'PCK_Image': cat_pck_img,
@@ -84,7 +75,7 @@ def main():
     print(f"{'OVERALL (Mean)':<20} | {global_pck_img:.2%}      | {global_pck_kps:.2%}      | {len(img_scores)}")
     print("=" * 80)
 
-    # Optional: Save to file
+    # Save to file
     if args.output:
         summary.to_csv(args.output)
         print(f"\nSummary table saved to: {args.output}")

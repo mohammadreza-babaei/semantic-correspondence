@@ -5,7 +5,6 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 
-# Import the helper we defined earlier
 from src.new_loss import predict_keypoints
 
 class PCKEvaluator:
@@ -56,7 +55,7 @@ class PCKEvaluator:
         """
         Internal method to process a single batch using the Explicit Geometric Pipeline.
         """
-        # 1. Unpack Metadata (Handle batch_size=1 or >1)
+        # Unpack Metadata (Handle batch_size=1 or >1)
         src_names = batch['src_name']
         trg_names = batch['trg_name']
         src_kps_raw = batch['src_kps']   # (B, N, 2)
@@ -66,7 +65,7 @@ class PCKEvaluator:
         # Determine batch size dynamically
         B = len(src_names) if isinstance(src_names, list) else 1
         
-        # 2. Iterate through items in the batch
+        # Iterate through items in the batch
         for i in range(B):
             # Handle list vs string unpacking
             s_name = src_names[i] if B > 1 else src_names
@@ -83,7 +82,7 @@ class PCKEvaluator:
             src_orig_w, src_orig_h = cache_src['orig_size']
             trg_orig_w, trg_orig_h = cache_trg['orig_size']
             
-            # 3. Load Features & Forward Pass
+            # Load Features & Forward Pass
             src_inter = cache_src['intermediate'].to(self.device)
             trg_inter = cache_trg['intermediate'].to(self.device)
             
@@ -94,7 +93,7 @@ class PCKEvaluator:
             feat1 = self.model.forward_unfrozen_blocks(src_inter)
             feat2 = self.model.forward_unfrozen_blocks(trg_inter)
             
-            # 4. Scale Source Keypoints: Original -> Standard
+            # Scale Source Keypoints: Original -> Standard
             # We select the specific keypoints for this image
             curr_src_kps = src_kps_raw[i] if B > 1 else src_kps_raw
             if not isinstance(curr_src_kps, torch.Tensor): 
@@ -105,27 +104,27 @@ class PCKEvaluator:
             src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
             src_kps_std = src_kps_std.to(self.device).unsqueeze(0) # (1, N, 2)
             
-            # 5. Predict (returns [-1, 1])
+            # Predict (returns [-1, 1])
             pred_kps_norm = predict_keypoints(
                 feat1, feat2, src_kps_std,
                 src_img_size=(self.standard_size, self.standard_size),
                 temperature=0.1
             )
             
-            # 6. Scale Prediction: [-1, 1] -> Target Original
+            # Scale Prediction: [-1, 1] -> Target Original
             pred_kps_orig = pred_kps_norm.clone()
             pred_kps_orig[..., 0] = (pred_kps_norm[..., 0] + 1) / 2 * (trg_orig_w - 1)
             pred_kps_orig[..., 1] = (pred_kps_norm[..., 1] + 1) / 2 * (trg_orig_h - 1)
             pred_kps_orig = pred_kps_orig.squeeze(0).cpu() # (N, 2)
             
-            # 7. Compute Errors
+            # Compute Errors
             curr_trg_kps = trg_kps_raw[i] if B > 1 else trg_kps_raw
             if not isinstance(curr_trg_kps, torch.Tensor):
                 curr_trg_kps = torch.tensor(curr_trg_kps)
                 
             distances = torch.norm(pred_kps_orig - curr_trg_kps, dim=-1)
             
-            # 8. Compute Threshold (BBox)
+            # Compute Threshold (BBox)
             curr_bbox = trg_bbox[i] if B > 1 else trg_bbox
             if not isinstance(curr_bbox, torch.Tensor): curr_bbox = torch.tensor(curr_bbox)
             
@@ -134,7 +133,7 @@ class PCKEvaluator:
             bbox_size = max(bbox_w, bbox_h).item()
             threshold = alpha * bbox_size
             
-            # 9. Log to CSV
+            # Logging to CSV
             category = batch['category'][i] if (B > 1 and 'category' in batch) else batch.get('category', 'unknown')
             if isinstance(category, list): category = category[0] # Handle weird batching cases
             
@@ -166,13 +165,12 @@ class PCKEvaluator:
         
         df = pd.read_csv(csv_path)
         
-        # Filter for visible only (though we only saved visible ones usually)
         df = df[df['is_visible'] == 1]
         
-        # 1. PCK Per Keypoint (Total Correct / Total Visible)
+        #PCK Per Keypoint (Total Correct / Total Visible)
         pck_kps = df['is_correct'].mean()
         
-        # 2. PCK Per Image (Mean of (Correct/Visible) per image)
+        # PCK Per Image (Mean of (Correct/Visible) per image)
         # Group by image pairs
         img_scores = df.groupby(['pair_idx', 'src_img'])['is_correct'].mean()
         pck_img = img_scores.mean()

@@ -1,4 +1,3 @@
-# Evaluation metrics for semantic correspondence tasks
 import torch
 import numpy as np
 
@@ -74,7 +73,7 @@ def calculate_pck(pred_kps, gt_kps, bbox, alpha=0.1, mask=None, size_type='bbox'
     # Determine correct keypoints
     correct = dist <= threshold
     
-    # Apply mask if provided (e.g., to ignore occluded/invisible keypoints)
+    # Apply mask if provided
     if mask is not None:
         if not isinstance(mask, torch.Tensor):
             mask = torch.tensor(mask).bool()

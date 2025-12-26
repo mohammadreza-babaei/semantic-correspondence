@@ -19,26 +19,26 @@ def predict_keypoints(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=
     if trg_img_size is None:
         trg_img_size = src_img_size
     
-    # 1. Get Dimensions
+    # Get Dimensions
     B, C, H_src, W_src = src_feats.shape
     _, _, H_trg, W_trg = trg_feats.shape
     H_src_img, W_src_img = src_img_size
 
-    # 2. Normalize Source Keypoints (using SOURCE Image Dimensions)
+    # Normalize Source Keypoints (using SOURCE Image Dimensions)
     src_grid = src_kps.clone()
     src_grid[:, :, 0] = 2.0 * (src_kps[:, :, 0] / (W_src_img - 1)) - 1.0
     src_grid[:, :, 1] = 2.0 * (src_kps[:, :, 1] / (H_src_img - 1)) - 1.0
     src_grid = src_grid.unsqueeze(1) # (B, 1, N, 2)
 
-    # 3. Extract Source Descriptors
+    # Extract Source Descriptors
     src_desc = F.grid_sample(src_feats, src_grid, mode='bilinear', align_corners=True).squeeze(2)
 
-    # 4. Compute Similarity
+    # Compute Similarity
     src_vecs = src_desc.permute(0, 2, 1)      # (B, N, C)
     trg_vecs = trg_feats.view(B, C, -1)       # (B, C, H*W)
     
     # Always use Cosine Similarity (L2 normalize)
-    # Note: We manually normalize and use bmm (dot product) because it is the most 
+    # We manually normalize and use bmm (dot product) because it is the most 
     # memory-efficient way to compute pairwise cosine similarity for all points.
     # F.cosine_similarity would require broadcasting to (B, N, HW, C) which is O(N*HW*C) memory.
     src_vecs = F.normalize(src_vecs, p=2, dim=-1)
@@ -46,7 +46,7 @@ def predict_keypoints(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=
     
     raw_heatmaps = torch.bmm(src_vecs, trg_vecs)
 
-    # 5. Soft-Argmax
+    # Soft-Argmax
     heatmaps = raw_heatmaps.view(B, -1, H_trg * W_trg)
     
     # Numerical stability: subtract max before softmax
@@ -75,7 +75,7 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
     _, _, H_trg, W_trg = trg_feats.shape
     H_src_img, W_src_img = src_img_size
 
-    # --- 1. Extract Descriptors ---
+    # Extract Descriptors
     src_grid = src_kps.clone()
     src_grid[:, :, 0] = 2.0 * (src_kps[:, :, 0] / (W_src_img - 1)) - 1.0
     src_grid[:, :, 1] = 2.0 * (src_kps[:, :, 1] / (H_src_img - 1)) - 1.0
@@ -83,7 +83,7 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
 
     src_desc = F.grid_sample(src_feats, src_grid, mode='bilinear', align_corners=True).squeeze(2)
 
-    # --- 2. Compute Heatmaps ---
+    # Compute Heatmaps 
     # Check for NaNs in features
     if torch.isnan(src_feats).any() or torch.isnan(trg_feats).any():
         print("WARNING: NaNs detected in Input Features! Model has collapsed.")
@@ -94,7 +94,7 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
     raw_heatmaps = torch.bmm(src_vecs, trg_vecs) 
     heatmaps = raw_heatmaps.view(B, -1, H_trg, W_trg)
 
-    # --- 3. Window Refinement ---
+    # Window Refinement
     flat_max_indices = torch.argmax(raw_heatmaps, dim=-1)
     center_y = torch.div(flat_max_indices, W_trg, rounding_mode='floor')
     center_x = flat_max_indices % W_trg
@@ -114,10 +114,10 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
             
             patch = heatmaps[b, n, y_min:y_max, x_min:x_max]
             
-            # 1. Numerical Stability (subtract max)
+            # Numerical Stability (subtract max)
             patch = patch - patch.max()
             
-            # 2. FLATTEN before Softmax 
+            # Flatten before Softmax 
             # We want the probability to sum to 1 over the WHOLE patch, not just rows.
             flat_patch = patch.view(-1) 
             prob_flat = F.softmax(flat_patch / temperature, dim=0)
@@ -128,7 +128,7 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
                  # Fallback
                 refined_x, refined_y = torch.tensor(float(cx)), torch.tensor(float(cy))
             else:
-                # 3. Calculate Center of Mass
+                # Calculate Center of Mass
                 grid_y, grid_x = torch.meshgrid(
                     torch.arange(y_min, y_max, device=patch.device, dtype=patch.dtype),
                     torch.arange(x_min, x_max, device=patch.device, dtype=patch.dtype),
@@ -174,14 +174,14 @@ def loss(src_feats, trg_feats, src_kps, trg_kps, src_img_size, trg_img_size=None
         
     H_trg_img, W_trg_img = trg_img_size
     
-    # 1. Get Prediction (Reusing the helper to avoid code duplication)
+    # Get Prediction (Reusing the helper to avoid code duplication)
     pred_kps = predict_keypoints(src_feats, trg_feats, src_kps, src_img_size, trg_img_size, 
                                  temperature=temperature)
 
-    # 2. Normalize Ground Truth Target Keypoints
+    # Normalize Ground Truth Target Keypoints
     trg_norm = trg_kps.clone()
     trg_norm[:, :, 0] = 2.0 * (trg_kps[:, :, 0] / (W_trg_img - 1)) - 1.0
     trg_norm[:, :, 1] = 2.0 * (trg_kps[:, :, 1] / (H_trg_img - 1)) - 1.0
 
-    # 3. Calculate Loss
+    # Calculate Loss
     return F.mse_loss(pred_kps, trg_norm)

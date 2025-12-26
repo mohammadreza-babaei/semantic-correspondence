@@ -27,8 +27,8 @@ class Trainer():
         self.history = {
             'train_loss': [],
             'val_loss': [],
-            'val_pck_global': [],  # Changed from single 'val_pck'
-            'val_pck_window': [],  # Added window version
+            'val_pck_global': [],  # Global softmax  
+            'val_pck_window': [],  # inference technique softmax windowed version
             'epoch_train_losses': [],
             'learning_rates': []
         }
@@ -48,7 +48,7 @@ class Trainer():
         cache_dir = Path('checkpoints') / 'feature_cache' / model_cache_name
         cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize empty cache - will be populated lazily during training
+        # Initialize empty cache populated lazily during training
         self.features_cache = None  # Signal that we use file-based caching
         self.cache_dir = cache_dir
         
@@ -85,7 +85,7 @@ class Trainer():
         
         print(f"Extracting intermediate features at {self.model.standard_size}x{self.model.standard_size}...")
         
-        # Extract and save features one at a time (memory efficient)
+        # Extract and save features one at a time
         iterator = tqdm(to_extract, desc="Extracting intermediate features")
         
         for img_name in iterator:
@@ -109,7 +109,7 @@ class Trainer():
                 'orig_size': (orig_w, orig_h),
             }
             
-            # Save immediately to individual file (memory efficient!)
+            # Save immediately to individual file
             cache_path = cache_dir / f"{img_name.replace('/', '_')}.pt"
             torch.save(feature_data, cache_path)
             
@@ -236,7 +236,7 @@ class Trainer():
         src_kps = batch['src_kps']
         trg_kps = batch['trg_kps']
         
-        # Load cached INTERMEDIATE features from disk (lazy loading)
+        # Load cached INTERMEDIATE features from disk 
         src_data = self._load_cached_features(src_name)
         trg_data = self._load_cached_features(trg_name)
         
@@ -268,7 +268,7 @@ class Trainer():
         src_kps = src_kps.to(self.device)
         trg_kps = trg_kps.to(self.device)
         
-        # Handle visibility: skip invisible keypoints
+        # Skip invisible keypoints
         if src_kps.shape[-1] == 3:
             vis = (src_kps[:, 2] > 0) & (trg_kps[:, 2] > 0)
             src_kps_vis = src_kps[vis, :2]
@@ -294,9 +294,6 @@ class Trainer():
                 temperature=0.1
             )
 
-        # -------------------------------------------------------------------------
-        # COMPARE: GLOBAL vs WINDOW
-        # -------------------------------------------------------------------------
         # Input: The SCALED keypoints (1, N, 2)
         src_kps_all_scaled = src_kps[:, :2].unsqueeze(0) 
         
@@ -421,7 +418,7 @@ class Trainer():
             )
         
         # Setup scheduler
-        # 1. Calculate the number of steps per epoch
+        # Calculate the number of steps per epoch
         if max_iters_per_epoch is not None:
             steps_per_epoch = min(max_iters_per_epoch, len(train_loader))
         else:
@@ -438,7 +435,7 @@ class Trainer():
             weight_decay=0.01
         )
 
-        # 2. Initialize scheduler with the correct total steps
+        # Initialize scheduler with the correct total steps
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, 
             T_max=total_steps
@@ -447,7 +444,7 @@ class Trainer():
         # Create output directory
         os.makedirs(save_path, exist_ok=True)
 
-        # --- CSV SETUP - PCK ---
+        # CSV SETUP for PCK 
         model_name_clean = self.model.model_name.replace('/', '_')
         csv_filename = f"val_metrics_{model_name_clean}_e{epochs}_b{batch_size}.csv"
         csv_path = Path(save_path) / csv_filename
@@ -457,7 +454,7 @@ class Trainer():
             writer = csv.writer(f)
             writer.writerow(['epoch', 'batch', 'train_loss', 'val_loss', 'pck_global', 'pck_window'])
 
-        # CSV SETUP - TRAIN ------------
+        # CSV SETUP for TRAIN 
         csv_filename = f"training_log_e{epochs}_b{batch_size}.csv"
         csv_file_path = os.path.join(save_path, csv_filename)
                 
@@ -495,7 +492,7 @@ class Trainer():
                 if batch_idx >= max_iters:
                     break
                 
-                # First batch of epoch (or after previous update), zero gradients
+                # First batch of epoch, zero gradients
                 if (batch_idx % accumulation_steps == 0):
                     self.optimizer.zero_grad()
 
@@ -570,7 +567,7 @@ class Trainer():
                     wandb.log({
                         "val/loss": val_loss,
                         "val/pck_global": val_pck_g,
-                        "val/pck_window": val_pck_w, # Compare these in WandB UI
+                        "val/pck_window": val_pck_w, 
                         "epoch": epoch
                     })
 
@@ -610,7 +607,7 @@ class Trainer():
         if use_wandb:
             wandb.finish()
         
-        # --- FINAL PLOT ---
+        # FINAL PLOT
         print("Generating final training graph...")
         plot_training_history(self.history, save_path=f"{save_path}/final_training_curves.png")
         
