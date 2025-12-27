@@ -11,7 +11,7 @@ from segment_anything import sam_model_registry
 # Standard image size for all feature extraction (divisible by patch_size=16)
 # Reduced from 1024 for speed/memory efficiency if needed. 
 # Default 1024 is native SAM resolution.
-STANDARD_SIZE = 1024
+STANDARD_SIZE = 512
 
 class SAMAdapter:
     def __init__(
@@ -130,7 +130,22 @@ class SAMAdapter:
             
             # Add positional embedding if present
             if self.model.pos_embed is not None:
-                x = x + self.model.pos_embed
+                pos_embed = self.model.pos_embed
+                # Check if we need to interpolate positional embeddings
+                # pos_embed is (1, H_orig, W_orig, C), x is (B, H, W, C)
+                if pos_embed.shape[1:3] != x.shape[1:3]:
+                    # Interpolate pos_embed to match current spatial size
+                    # Reshape to (1, C, H, W) for interpolation
+                    pos_embed = pos_embed.permute(0, 3, 1, 2)
+                    pos_embed = F.interpolate(
+                        pos_embed, 
+                        size=(x.shape[1], x.shape[2]), 
+                        mode='bilinear', 
+                        align_corners=False
+                    )
+                    # Reshape back to (1, H, W, C)
+                    pos_embed = pos_embed.permute(0, 2, 3, 1)
+                x = x + pos_embed
             
             # Run through FROZEN blocks only
             for i, block in enumerate(self.model.blocks):
