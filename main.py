@@ -71,11 +71,11 @@ def main():
     eval_parser.add_argument("--save-path", type=str, default="checkpoints/finetuned_dinov2",
                              help="Folder containing 'best_model.pt'")
     eval_parser.add_argument("--weights-path", type=str, default=None,
-                             help="Explicit path to .pt file (overrides save-path)")
+                             help="Explicit path to the .pt file (e.g., epoch_5.pt)")
     eval_parser.add_argument("--alpha", type=float, default=0.1,
-                             help="coefficient that defines the range of acceptance")
-    eval_parser.add_argument("--split", type=str, default="test", choices=["test", "val"], 
-                             help="Dataset split to evaluate on (test or val)")
+                             help="PCK threshold factor")
+    eval_parser.add_argument("--split", type=str, default="val", choices=["test", "val"], 
+                             help="Dataset split to evaluate on")
     
     args = parser.parse_args()
 
@@ -199,6 +199,7 @@ def fine_tune(args, model_type):
     print("="*60)
     
 
+
 def evaluate(args):
     """
     Standalone evaluation function using PCKEvaluator with Adapter support.
@@ -210,19 +211,24 @@ def evaluate(args):
     print("="*60)
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
     
     # 1. Load Data
     dataset_path = args.dataset_path or os.environ.get('SPAIR_URL', './data')
     eval_dataset = SPair71kPairs(root=dataset_path, split=args.split)
     
-    # 2. Initialize Adapter (Architecture)
-    # We must match the class names from your uploaded files (DINOv2Adapter, DINOv3Adapter, SAMAdapter)
+    # 2. Initialize Adapter
+    # IMPORTANT: Initialize with weights_path=None. 
+    # We do NOT want to load the base weights here; we will overwrite them 
+    # with the fine-tuned checkpoint in step 3.
+    
+    print("Initializing architecture...")
     if "dinov2" in args.model_name:
         adapter = DINOv2Adapter(
             model_name=args.model_name,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=None # We load weights manually below
+            weights_path=None
         )
     elif "dinov3" in args.model_name:
         adapter = DINOv3Adapter(
@@ -232,48 +238,49 @@ def evaluate(args):
             weights_path=None
         )
     elif "sam" in args.model_name:
-        # SAMAdapter might require initial weights in init to build the model, 
-        # but we overwrite them with our checkpoint anyway.
-        # Assuming you have base weights downloaded as per SAM instructions.
-        # For simplicity, passing None if the class allows, or a placeholder.
-        # Ideally, point to base weights if required by SAMAdapter __init__.
         adapter = SAMAdapter(
-            model_name=args.model_name.replace("sam_", ""), # 'vit_b', etc.
+            model_name=args.model_name.replace("sam_", ""),
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path="models/sam_vit_b_01ec64.pth" if args.weights_path is None else None # Placeholder
+            weights_path=None
         )
     else:
         raise ValueError(f"Unknown model: {args.model_name}")
     
-    # 3. Load Trained Weights
-    checkpoint_path = args.weights_path if args.weights_path else f"{args.save_path}/best_model.pt"
-    if os.path.exists(checkpoint_path):
-        print(f"Loading weights from: {checkpoint_path}")
-        # Use torch.load to get the dictionary first
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        # Adapt to our new format if it's a full checkpoint
-        if 'model_state' in checkpoint:
-            adapter.load_model_state(checkpoint['model_state'])
+    # 3. Load Trained Weights (The Fine-Tuned Checkpoint)
+    # This is where we load epoch.pt
+    if args.weights_path and os.path.exists(args.weights_path):
+        print(f"Loading fine-tuned checkpoint from: {args.weights_path}")
+        checkpoint = torch.load(args.weights_path, map_location=device, weights_only=False)
+        
+        # Determine how to unwrap the checkpoint
+        if isinstance(checkpoint, dict):
+            if 'model_state' in checkpoint:
+                adapter.load_model_state(checkpoint['model_state'])
+            elif 'backbone_state_dict' in checkpoint:
+                adapter.load_model_state(checkpoint)
+            elif 'sam_model_state_dict' in checkpoint:
+                adapter.load_model_state(checkpoint)
+            else:
+                # Fallback: assume the dict itself is the state dict
+                adapter.load_model_state(checkpoint)
         else:
-            adapter.load_model_state(checkpoint)
+             print("Error: Checkpoint format not recognized (expected dict).")
     else:
-        print(f"Warning: No checkpoint found at {checkpoint_path}. Using random/base weights.")
+        print(f"Warning: Checkpoint not found at {args.weights_path}. Using base/random weights.")
 
     # 4. Initialize Trainer (Wrapper for Caching)
-    # The PCKEvaluator needs the trainer to access the feature cache.
     trainer = Trainer(
         model=adapter,
         device=device,
         num_unfrozen_blocks=args.num_unfrozen_blocks
     )
 
-    # 5. Extract Features (Required for the pipeline)
+    # 5. Extract Features
     print(f"\nPre-extracting features for {args.split.capitalize()} Set...")
-    trainer.cache_intermediate_features(eval_dataset)
+    trainer.cache_intermediate_features(eval_dataset, num_augmentations=0)
     
     # 6. Create Dataloader
-    # Trainer has the correct collate_fn
     eval_loader = DataLoader(
         eval_dataset, 
         batch_size=1, 
@@ -282,8 +289,7 @@ def evaluate(args):
         collate_fn=trainer._collate_fn
     )
     
-    # 7. Run Evaluation using PCKEvaluator
-    # Pass the TRAINER to the evaluator
+    # 7. Run Evaluation
     evaluator = PCKEvaluator(trainer=trainer, device=device)
     
     results_file = f"metrics/{args.split}_results_{args.model_name}_alpha{args.alpha}.csv"
@@ -291,7 +297,6 @@ def evaluate(args):
     
     # 8. Print Summary
     evaluator.summarize_results(results_file, args.alpha)
-
 
 
 

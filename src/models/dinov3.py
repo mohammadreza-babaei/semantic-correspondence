@@ -42,23 +42,31 @@ class DINOv3Adapter:
         print(f"Loading local weights from: {weights_path}")
         self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
 
-        # 2. Load Weights (.pth)
-        state_dict = torch.load(weights_path, map_location="cpu", weights_only=False)
+        # --- FIX: CHECK IF PATH EXISTS BEFORE LOADING ---
+        if weights_path is not None:
+            if os.path.exists(weights_path):
+                # 2. Load Weights (.pth)
+                state_dict = torch.load(weights_path, map_location="cpu", weights_only=False)
 
-        # 3. Clean Keys
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            # Remove Hugging Face specific prefixes
-            k = k.replace("model.", "") 
-            k = k.replace("base_model.model.", "")
-            # Remove standard DINO prefixes
-            k = k.replace("teacher.", "")
-            k = k.replace("backbone.", "") 
-            new_state_dict[k] = v
-        
-        # 4. Inject weights
-        msg = self.model.load_state_dict(new_state_dict, strict=False)
-        print(f"Weights loaded. Status: {msg}")
+                # 3. Clean Keys
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    # Remove Hugging Face specific prefixes
+                    k = k.replace("model.", "") 
+                    k = k.replace("base_model.model.", "")
+                    # Remove standard DINO prefixes
+                    k = k.replace("teacher.", "")
+                    k = k.replace("backbone.", "") 
+                    new_state_dict[k] = v
+                
+                # 4. Inject weights
+                msg = self.model.load_state_dict(new_state_dict, strict=False)
+                print(f"Weights loaded. Status: {msg}")
+            else:
+                print(f"Warning: Weights path '{weights_path}' not found. Initializing with random weights.")
+        else:
+            print("No weights_path provided. Initializing with random/base weights (expecting manual load).")
+        # ------------------------------------------------
         
         # Feature caching setup
         self.num_unfrozen_blocks = num_unfrozen_blocks

@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 from pathlib import Path
 from segment_anything import sam_model_registry
+import os
 
 
 # Standard image size for all feature extraction (divisible by patch_size=16)
@@ -43,11 +44,18 @@ class SAMAdapter:
                            f"Valid options: {list(sam_model_registry.keys())}")
         
         print(f"Loading SAM {model_name} on {self.device}...")
+
+        # --- FIX: ROBUST CHECKPOINT LOADING ---
+        # If path is provided but missing, warn and switch to None (Random Init)
+        if weights_path is not None and not os.path.exists(weights_path):
+            print(f"Warning: SAM weights path '{weights_path}' not found. Initializing with random weights.")
+            weights_path = None
         
-        # Build the SAM model using the registry
+        # weights_path can be None here -> SAM registry initializes random weights
         self.sam_model = sam_model_registry[model_name](checkpoint=weights_path)
         self.sam_model.to(self.device)
         self.sam_model.eval()
+        # --------------------------------------
         
         # Access the image encoder (vision encoder)
         self.model = self.sam_model.image_encoder
