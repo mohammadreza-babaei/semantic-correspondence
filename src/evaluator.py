@@ -1,12 +1,13 @@
 import torch
 import csv
 import os
+import cv2
 import numpy as np
+import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
 import pandas as pd
 
-# Import the helpers
 from src.new_loss import predict_keypoints, predict_keypoints_window
 from src.pck import compute_pck_from_batch
 
@@ -22,6 +23,9 @@ class PCKEvaluator:
         self.device = device
         # Use the model's configured standard size (e.g., 518 or 528)
         self.standard_size = getattr(self.model, 'standard_size', 518)
+        
+        # Buffer to store results for visualization
+        self.pair_results = []
 
     def compute_metrics_with_sizes(self, feat1, feat2, src_kps_std, batch, trg_sizes, alpha=0.1):
         """
@@ -74,10 +78,11 @@ class PCKEvaluator:
         
         return pck_g_accum / B, pck_w_accum / B
 
-    def evaluate(self, dataloader, output_path, alpha=0.1):
+    def evaluate(self, dataloader, output_path, alpha=0.1, save_top_k=5):
         """
         Runs full evaluation loop (Evaluation Phase).
-        Loads features from cache, computes metrics, and writes detailed CSV rows.
+        Loads features from cache, computes metrics, writes detailed CSV rows,
+        and saves visualizations for the best and worst matches.
         """
         self.model.model.eval()
         
@@ -87,6 +92,9 @@ class PCKEvaluator:
         print(f"Evaluating on {len(dataloader)} pairs...")
         print(f"Standard Size for Inference: {self.standard_size}x{self.standard_size}")
         print(f"Saving per-keypoint details to: {output_path}")
+
+        # Reset results buffer
+        self.pair_results = []
 
         # Open CSV for writing
         with open(output_path, 'w', newline='') as f:
@@ -103,14 +111,21 @@ class PCKEvaluator:
                 for batch_idx, batch in enumerate(tqdm(dataloader, desc="Eval")):
                     self._process_batch(batch, batch_idx, writer, alpha)
         
-        print(f"Evaluation finished. Results saved.")
+        print(f"Evaluation finished. CSV Results saved.")
+        
+        # --- Visualization of Extremes ---
+        if save_top_k > 0:
+            vis_dir = os.path.join(os.path.dirname(output_path), "visualizations")
+            self.save_extremes(vis_dir, k=save_top_k)
+
         return output_path
 
     def _process_batch(self, batch, batch_idx, writer, alpha):
         """
-        Internal method for evaluate() loop. Handles data loading and CSV logging.
+        Internal method for evaluate() loop. Handles data loading, CSV logging,
+        and accumulating data for visualization.
         """
-        # Unpack Metadata (Handle batch_size=1 or >1)
+        # 1. Unpack Metadata
         src_names = batch['src_name']
         trg_names = batch['trg_name']
         src_kps_raw = batch['src_kps']   # (B, N, 2)
@@ -119,7 +134,6 @@ class PCKEvaluator:
         
         B = len(src_names) if isinstance(src_names, list) else 1
         
-        # Iterate through items in the batch
         for i in range(B):
             s_name = src_names[i] if B > 1 else src_names
             t_name = trg_names[i] if B > 1 else trg_names
@@ -139,19 +153,15 @@ class PCKEvaluator:
             src_inter = cache_src['intermediate'].to(self.device)
             trg_inter = cache_trg['intermediate'].to(self.device)
             
-            # --- FIX: Only unsqueeze if it is missing a batch dim entirely (Dim=2) ---
-            # Your cache already saves with batch dim 1, so src_inter is typically (1, N, C)
             if src_inter.dim() == 2: 
                 src_inter = src_inter.unsqueeze(0)
             if trg_inter.dim() == 2: 
                 trg_inter = trg_inter.unsqueeze(0)
-            # ------------------------------------------------------------------------
 
             feat1 = self.model.forward_unfrozen_blocks(src_inter)
             feat2 = self.model.forward_unfrozen_blocks(trg_inter)
             
             # Scale Source Keypoints: Original -> Standard
-            # We select the specific keypoints for this image
             curr_src_kps = src_kps_raw[i] if B > 1 else src_kps_raw
             if not isinstance(curr_src_kps, torch.Tensor): 
                 curr_src_kps = torch.tensor(curr_src_kps, dtype=torch.float32)
@@ -191,16 +201,21 @@ class PCKEvaluator:
             dist_global = torch.norm(pred_global_orig - curr_trg_kps, dim=-1)
             dist_window = torch.norm(pred_window_orig - curr_trg_kps, dim=-1)
             
-            # Compute Threshold (BBox)
+            # Compute Threshold
             curr_bbox = trg_bbox[i] if B > 1 else trg_bbox
             if not isinstance(curr_bbox, torch.Tensor): curr_bbox = torch.tensor(curr_bbox)
             bbox_size = max(curr_bbox[2]-curr_bbox[0], curr_bbox[3]-curr_bbox[1]).item()
             threshold = alpha * bbox_size
             
-            # Logging to CSV
+            # Logging to CSV & Accumulating Pair Stats
             category = batch['category'][i] if (B > 1 and 'category' in batch) else batch.get('category', 'unknown')
             if isinstance(category, list): category = category[0]
             
+            # Stats accumulators for visualization ranking
+            pair_correct_count = 0
+            pair_visible_count = 0
+            pair_total_error = 0.0
+
             num_kps = dist_global.shape[0]
             for k in range(num_kps):
                 err_g = dist_global[k].item()
@@ -216,8 +231,29 @@ class PCKEvaluator:
                         f"{err_g:.4f}", int(is_correct_g),
                         f"{err_w:.4f}", int(is_correct_w)
                     ])
+                    
+                    # For visualization ranking, we primarily use the Window method score
+                    pair_visible_count += 1
+                    pair_total_error += err_w
+                    if is_correct_w:
+                        pair_correct_count += 1
 
-    def summarize_results(self, csv_path, alpha):
+            # --- Store Pair Results for Best/Worst Analysis ---
+            if pair_visible_count > 0:
+                pck_score = pair_correct_count / pair_visible_count
+                avg_error = pair_total_error / pair_visible_count
+                
+                self.pair_results.append({
+                    'src_path': s_name,
+                    'trg_path': t_name,
+                    'src_kps': curr_src_kps.numpy(),
+                    'trg_kps': curr_trg_kps.numpy(),
+                    'pred_kps': pred_window_orig.numpy(), # Using Window prediction for vis
+                    'pck': pck_score,
+                    'error': avg_error
+                })
+
+def summarize_results(self, csv_path, alpha):
         """
         Reads the generated CSV and prints summary metrics for both methods.
         """
@@ -260,3 +296,266 @@ class PCKEvaluator:
         print(f"{'PCK (Per Keypoint)':<20} | {pck_kps_g:.2%}     | {pck_kps_w:.2%}     | {pck_kps_w - pck_kps_g:+.2%}")
         print(f"{'PCK (Per Image)':<20} | {pck_img_g:.2%}     | {pck_img_w:.2%}     | {pck_img_w - pck_img_g:+.2%}")
         print("-" * 60)
+
+def save_extremes(self, save_dir, k=5):
+        """
+        Sorts tracked results and visualizes Top K and Bottom K image pairs.
+        """
+        if not self.pair_results:
+            print("No results available to visualize.")
+            return
+
+        print(f"Generating visualizations for Top {k} and Bottom {k} results...")
+        os.makedirs(os.path.join(save_dir, 'best'), exist_ok=True)
+        os.makedirs(os.path.join(save_dir, 'worst'), exist_ok=True)
+
+        # Sort: Primary key = PCK (Desc), Secondary key = Error (Asc -> using negative for sort)
+        sorted_res = sorted(self.pair_results, key=lambda x: (x['pck'], -x['error']), reverse=True)
+
+        best_pairs = sorted_res[:k]
+        worst_pairs = sorted_res[-k:]
+
+        for i, res in enumerate(best_pairs):
+            filename = f"rank{i+1}_best_pck{res['pck']:.2f}.png"
+            self._plot_pair(res, os.path.join(save_dir, 'best', filename))
+
+        for i, res in enumerate(worst_pairs):
+            # Reverse rank index for worst (rank 1 = absolute worst)
+            rank = len(sorted_res) - (len(worst_pairs) - 1 - i)
+            filename = f"rank{rank}_worst_pck{res['pck']:.2f}.png"
+            self._plot_pair(res, os.path.join(save_dir, 'worst', filename))
+        
+        print(f"Visualizations saved to {save_dir}")
+
+def _plot_pair(self, res, save_path):
+        """
+        Helper to draw Source (Query) and Target (Prediction vs GT).
+        """
+        # Load Images (Assuming paths are valid)
+        src_img = cv2.imread(res['src_path'])
+        trg_img = cv2.imread(res['trg_path'])
+
+        if src_img is None or trg_img is None:
+            print(f"Could not load image for visualization: {res['src_path']} or {res['trg_path']}")
+            return
+
+        src_img = cv2.cvtColor(src_img, cv2.COLOR_BGR2RGB)
+        trg_img = cv2.cvtColor(trg_img, cv2.COLOR_BGR2RGB)
+
+        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+
+        # 1. Source Image + Query Points
+        ax[0].imshow(src_img)
+        ax[0].set_title("Source (Query Keypoints)")
+        ax[0].axis('off')
+        
+        # Plot source points (Yellow)
+        # Filter invisible source points (often 0,0)
+        src_kps = res['src_kps']
+        valid_src = (src_kps[:, 0] > 0) & (src_kps[:, 1] > 0)
+        ax[0].scatter(src_kps[valid_src, 0], src_kps[valid_src, 1], 
+                      c='yellow', s=50, marker='o', edgecolors='black', label='Query')
+
+        # 2. Target Image + Pred vs GT
+        ax[1].imshow(trg_img)
+        ax[1].set_title(f"Target (PCK: {res['pck']:.2f}, Err: {res['error']:.1f}px)")
+        ax[1].axis('off')
+
+        # Plot Ground Truth (Green)
+        gt = res['trg_kps']
+        valid_gt = (gt[:, 0] > 0) & (gt[:, 1] > 0)
+        ax[1].scatter(gt[valid_gt, 0], gt[valid_gt, 1], 
+                      c='lime', s=60, marker='o', edgecolors='black', label='Ground Truth')
+        
+        # Plot Prediction (Red)
+        pred = res['pred_kps']
+        # Only plot predictions where GT was valid (to reduce clutter)
+        ax[1].scatter(pred[valid_gt, 0], pred[valid_gt, 1], 
+                      c='red', s=40, marker='x', linewidth=2, label='Prediction')
+
+        # Draw lines connecting GT to Pred
+        for j in range(len(gt)):
+            if valid_gt[j]:
+                ax[1].plot([gt[j, 0], pred[j, 0]], [gt[j, 1], pred[j, 1]], 
+                           c='white', alpha=0.4, linestyle='--', linewidth=1)
+
+        ax[1].legend(loc='lower right', fontsize='small')
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=100)
+        plt.close(fig)
+
+def evaluate_pair_by_index(self, pair_idx, output_dir="single_evals", alpha=0.1):
+        """
+        Runs evaluation on a single pair by index.
+        Computes AND Visualizes both Global and Window methods.
+        """
+        # 1. Retrieve the single sample
+        dataset = self.trainer.val_loader.dataset
+        if pair_idx < 0 or pair_idx >= len(dataset):
+            print(f"Error: Index {pair_idx} out of bounds.")
+            return
+
+        sample = dataset[pair_idx]
+        s_name = sample['src_name']
+        t_name = sample['trg_name']
+        
+        # Load Raw Data
+        src_kps_raw = torch.tensor(sample['src_kps'], dtype=torch.float32)
+        trg_kps_raw = torch.tensor(sample['trg_kps'], dtype=torch.float32)
+        trg_bbox = torch.tensor(sample['trg_bndbox'], dtype=torch.float32)
+
+        print(f"\n--- Evaluating Pair Index: {pair_idx} ---")
+        print(f"Source: {s_name}")
+        print(f"Target: {t_name}")
+
+        # 2. Load Features
+        try:
+            cache_src = self.trainer._load_cached_features(s_name)
+            cache_trg = self.trainer._load_cached_features(t_name)
+        except RuntimeError:
+            print("Error: Cache missing.")
+            return
+
+        src_orig_w, src_orig_h = cache_src['orig_size']
+        trg_orig_w, trg_orig_h = cache_trg['orig_size']
+
+        # Prepare Tensors
+        src_inter = cache_src['intermediate'].to(self.device)
+        trg_inter = cache_trg['intermediate'].to(self.device)
+        if src_inter.dim() == 2: src_inter = src_inter.unsqueeze(0)
+        if trg_inter.dim() == 2: trg_inter = trg_inter.unsqueeze(0)
+
+        # 3. Model Inference (BOTH Methods)
+        self.model.model.eval()
+        with torch.no_grad():
+            feat1 = self.model.forward_unfrozen_blocks(src_inter)
+            feat2 = self.model.forward_unfrozen_blocks(trg_inter)
+
+            # Norm Source
+            src_kps_std = src_kps_raw.clone()
+            src_kps_std[:, 0] *= (self.standard_size / src_orig_w)
+            src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
+            src_input = src_kps_std.to(self.device).unsqueeze(0)
+
+            # A. Global Prediction
+            pred_global_norm = predict_keypoints(
+                feat1, feat2, src_input,
+                src_img_size=(self.standard_size, self.standard_size),
+                temperature=0.1
+            )
+            
+            # B. Window Prediction
+            pred_window_norm = predict_keypoints_window(
+                feat1, feat2, src_input,
+                src_img_size=(self.standard_size, self.standard_size),
+                temperature=0.1
+            )
+
+        # 4. Denormalize
+        def denorm(p_norm):
+            p = p_norm.clone().squeeze(0).cpu()
+            p[:, 0] = (p[:, 0] + 1) / 2 * (trg_orig_w - 1)
+            p[:, 1] = (p[:, 1] + 1) / 2 * (trg_orig_h - 1)
+            return p
+
+        pred_g_orig = denorm(pred_global_norm)
+        pred_w_orig = denorm(pred_window_norm)
+        
+        # 5. Compute Metrics for Both
+        def calc_score(pred_kps):
+            dist = torch.norm(pred_kps - trg_kps_raw, dim=-1)
+            bbox_size = max(trg_bbox[2]-trg_bbox[0], trg_bbox[3]-trg_bbox[1]).item()
+            threshold = alpha * bbox_size
+            valid_mask = (trg_kps_raw[:, 0] > 0) & (trg_kps_raw[:, 1] > 0)
+            valid_dist = dist[valid_mask]
+            
+            if len(valid_dist) > 0:
+                pck = (valid_dist <= threshold).float().mean().item()
+                err = valid_dist.mean().item()
+            else:
+                pck, err = 0.0, 0.0
+            return pck, err
+
+        pck_g, err_g = calc_score(pred_g_orig)
+        pck_w, err_w = calc_score(pred_w_orig)
+
+        print("-" * 40)
+        print(f"{'Method':<10} | {'PCK':<10} | {'Avg Error':<10}")
+        print("-" * 40)
+        print(f"{'Global':<10} | {pck_g:.2%}     | {err_g:.2f} px")
+        print(f"{'Window':<10} | {pck_w:.2%}     | {err_w:.2f} px")
+        print("-" * 40)
+
+        # 6. Visualize Comparison
+        res = {
+            'src_path': s_name,
+            'trg_path': t_name,
+            'src_kps': src_kps_raw.numpy(),
+            'trg_kps': trg_kps_raw.numpy(),
+            'pred_global': pred_g_orig.numpy(),
+            'pred_window': pred_w_orig.numpy(),
+            'pck_g': pck_g, 'err_g': err_g,
+            'pck_w': pck_w, 'err_w': err_w
+        }
+        
+        os.makedirs(output_dir, exist_ok=True)
+        save_path = os.path.join(output_dir, f"pair_{pair_idx}_comparison.png")
+        self._plot_pair_comparison(res, save_path)
+        print(f"Comparison image saved to: {save_path}")
+
+def _plot_pair_comparison(self, res, save_path):
+        """
+        Generates a 3-column plot: [Source] | [Global Pred] | [Window Pred]
+        """
+        src_img = cv2.imread(res['src_path'])
+        trg_img = cv2.imread(res['trg_path'])
+
+        if src_img is None or trg_img is None:
+            return
+
+        src_img = cv2.cvtColor(src_img, cv2.COLOR_BGR2RGB)
+        trg_img = cv2.cvtColor(trg_img, cv2.COLOR_BGR2RGB)
+        
+        # Create 3 subplots
+        fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+
+        # --- 1. Source ---
+        ax[0].imshow(src_img)
+        ax[0].set_title("Source (Query)")
+        ax[0].axis('off')
+        src_kps = res['src_kps']
+        valid_src = (src_kps[:, 0] > 0) & (src_kps[:, 1] > 0)
+        ax[0].scatter(src_kps[valid_src, 0], src_kps[valid_src, 1], c='yellow', s=50, edgecolors='black')
+
+        # Shared Helper for Target plotting
+        def plot_target(ax_idx, title, pred_kps, pck, err):
+            ax[ax_idx].imshow(trg_img)
+            ax[ax_idx].set_title(f"{title}\nPCK: {pck:.2f}, Err: {err:.1f}px")
+            ax[ax_idx].axis('off')
+            
+            gt = res['trg_kps']
+            valid_gt = (gt[:, 0] > 0) & (gt[:, 1] > 0)
+            
+            # Ground Truth (Green)
+            ax[ax_idx].scatter(gt[valid_gt, 0], gt[valid_gt, 1], c='lime', s=60, edgecolors='black', label='GT')
+            
+            # Prediction (Red)
+            ax[ax_idx].scatter(pred_kps[valid_gt, 0], pred_kps[valid_gt, 1], c='red', s=40, marker='x', label='Pred')
+            
+            # Connectors
+            for j in range(len(gt)):
+                if valid_gt[j]:
+                    ax[ax_idx].plot([gt[j, 0], pred_kps[j, 0]], [gt[j, 1], pred_kps[j, 1]], c='white', alpha=0.4, linestyle='--')
+            
+            ax[ax_idx].legend(loc='lower right', fontsize='small')
+
+        # --- 2. Global Result ---
+        plot_target(1, "Global Method", res['pred_global'], res['pck_g'], res['err_g'])
+
+        # --- 3. Window Result ---
+        plot_target(2, "Window Method", res['pred_window'], res['pck_w'], res['err_w'])
+
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close(fig)
