@@ -12,7 +12,7 @@ from src.new_loss import predict_keypoints, predict_keypoints_window
 from src.pck import compute_pck_from_batch
 
 class PCKEvaluator:
-    def __init__(self, trainer, device):
+    def __init__(self, trainer, device, dataset=None):
         """
         Args:
             trainer: The Trainer instance (holds .features_cache and .model).
@@ -23,7 +23,8 @@ class PCKEvaluator:
         self.device = device
         # Use the model's configured standard size (e.g., 518 or 528)
         self.standard_size = getattr(self.model, 'standard_size', 518)
-        
+        self.dataset = dataset
+
         # Buffer to store results for visualization
         self.pair_results = []
 
@@ -253,7 +254,7 @@ class PCKEvaluator:
                     'error': avg_error
                 })
 
-def summarize_results(self, csv_path, alpha):
+    def summarize_results(self, csv_path, alpha):
         """
         Reads the generated CSV and prints summary metrics for both methods.
         """
@@ -297,7 +298,7 @@ def summarize_results(self, csv_path, alpha):
         print(f"{'PCK (Per Image)':<20} | {pck_img_g:.2%}     | {pck_img_w:.2%}     | {pck_img_w - pck_img_g:+.2%}")
         print("-" * 60)
 
-def save_extremes(self, save_dir, k=5):
+    def save_extremes(self, save_dir, k=5):
         """
         Sorts tracked results and visualizes Top K and Bottom K image pairs.
         """
@@ -327,7 +328,7 @@ def save_extremes(self, save_dir, k=5):
         
         print(f"Visualizations saved to {save_dir}")
 
-def _plot_pair(self, res, save_path):
+    def _plot_pair(self, res, save_path):
         """
         Helper to draw Source (Query) and Target (Prediction vs GT).
         """
@@ -385,18 +386,17 @@ def _plot_pair(self, res, save_path):
         plt.savefig(save_path, dpi=100)
         plt.close(fig)
 
-def evaluate_pair_by_index(self, pair_idx, output_dir="single_evals", alpha=0.1):
+    def evaluate_pair_by_index(self, pair_idx, output_dir="single_evals", alpha=0.1):
         """
         Runs evaluation on a single pair by index.
         Computes AND Visualizes both Global and Window methods.
         """
         # 1. Retrieve the single sample
-        dataset = self.trainer.val_loader.dataset
-        if pair_idx < 0 or pair_idx >= len(dataset):
+        if pair_idx < 0 or pair_idx >= len(self.dataset):
             print(f"Error: Index {pair_idx} out of bounds.")
             return
 
-        sample = dataset[pair_idx]
+        sample = self.dataset[pair_idx]
         s_name = sample['src_name']
         t_name = sample['trg_name']
         
@@ -504,12 +504,17 @@ def evaluate_pair_by_index(self, pair_idx, output_dir="single_evals", alpha=0.1)
         self._plot_pair_comparison(res, save_path)
         print(f"Comparison image saved to: {save_path}")
 
-def _plot_pair_comparison(self, res, save_path):
+    def _plot_pair_comparison(self, res, save_path):
         """
         Generates a 3-column plot: [Source] | [Global Pred] | [Window Pred]
         """
-        src_img = cv2.imread(res['src_path'])
-        trg_img = cv2.imread(res['trg_path'])
+
+        
+        src_img_path = self.dataset.root / 'JPEGImages' / f'{res["src_path"]}.jpg'
+        trg_img_path = self.dataset.root / 'JPEGImages' / f'{res["trg_path"]}.jpg'
+
+        src_img = cv2.imread(src_img_path)
+        trg_img = cv2.imread(trg_img_path)
 
         if src_img is None or trg_img is None:
             return
