@@ -1,6 +1,22 @@
 import torch
 import torch.nn.functional as F
 
+def denormalize_predictions(pred_norm, trg_orig_size):
+    """Convert normalized [-1,1] predictions to original image coordinates.
+    
+    Args:
+        pred_norm: (B, N, 2) or (N, 2) normalized predictions
+        trg_orig_size: (W, H) of target image
+        
+    Returns:
+        Predictions in pixel coordinates (same shape as input)
+    """
+    w, h = trg_orig_size
+    pred = pred_norm.clone()
+    pred[..., 0] = (pred_norm[..., 0] + 1) / 2 * (w - 1)
+    pred[..., 1] = (pred_norm[..., 1] + 1) / 2 * (h - 1)
+    return pred
+
 def predict_keypoints(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=None, 
                       temperature=0.1):
     """

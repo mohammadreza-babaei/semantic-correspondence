@@ -8,7 +8,8 @@ from pathlib import Path
 from tqdm import tqdm
 import pandas as pd
 
-from src.new_loss import predict_keypoints, predict_keypoints_window
+# Import the helpers
+from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
 from src.pck import compute_pck_from_batch
 
 class PCKEvaluator:
@@ -139,28 +140,17 @@ class PCKEvaluator:
             s_name = src_names[i] if B > 1 else src_names
             t_name = trg_names[i] if B > 1 else trg_names
             
-            # Use Disk Loader
+            # Use trainer's helper for feature loading (with error handling)
             try:
-                cache_src = self.trainer._load_cached_features(s_name)
-                cache_trg = self.trainer._load_cached_features(t_name)
+                feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
+                    s_name, t_name, requires_grad=False
+                )
             except RuntimeError:
                 print(f"Warning: Cache file missing for {s_name} or {t_name}. Skipping.")
                 continue
             
-            src_orig_w, src_orig_h = cache_src['orig_size']
-            trg_orig_w, trg_orig_h = cache_trg['orig_size']
-            
-            # Load Features & Forward Pass
-            src_inter = cache_src['intermediate'].to(self.device)
-            trg_inter = cache_trg['intermediate'].to(self.device)
-            
-            if src_inter.dim() == 2: 
-                src_inter = src_inter.unsqueeze(0)
-            if trg_inter.dim() == 2: 
-                trg_inter = trg_inter.unsqueeze(0)
-
-            feat1 = self.model.forward_unfrozen_blocks(src_inter)
-            feat2 = self.model.forward_unfrozen_blocks(trg_inter)
+            trg_orig_w, trg_orig_h = trg_orig_size
+            src_orig_w, src_orig_h = src_orig_size
             
             # Scale Source Keypoints: Original -> Standard
             curr_src_kps = src_kps_raw[i] if B > 1 else src_kps_raw
@@ -184,15 +174,9 @@ class PCKEvaluator:
                 temperature=0.1
             )
             
-            # Scale Prediction: [-1, 1] -> Target Original
-            def denorm(p_norm):
-                p = p_norm.clone()
-                p[..., 0] = (p_norm[..., 0] + 1) / 2 * (trg_orig_w - 1)
-                p[..., 1] = (p_norm[..., 1] + 1) / 2 * (trg_orig_h - 1)
-                return p.squeeze(0).cpu()
-
-            pred_global_orig = denorm(pred_global_norm)
-            pred_window_orig = denorm(pred_window_norm)
+            # Denormalize predictions using shared helper
+            pred_global_orig = denormalize_predictions(pred_global_norm, trg_orig_size).squeeze(0).cpu()
+            pred_window_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
             
             # Compute Errors
             curr_trg_kps = trg_kps_raw[i] if B > 1 else trg_kps_raw
@@ -444,34 +428,19 @@ class PCKEvaluator:
         print(f"Target: {t_name}")
 
         # 2. Load Features
-        try:
-            cache_src = self.trainer._load_cached_features(s_name)
-            cache_trg = self.trainer._load_cached_features(t_name)
-        except RuntimeError:
-            print("Error: Cache missing.")
-            return
+        feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
+            s_name, t_name, requires_grad=False
+        )
 
-        src_orig_w, src_orig_h = cache_src['orig_size']
-        trg_orig_w, trg_orig_h = cache_trg['orig_size']
+        # 3. Prepare keypoints (no visibility filtering for eval)
+        src_kps_std, _ = self.trainer._prepare_keypoints(
+            src_kps_raw, trg_kps_raw, src_orig_size, trg_orig_size, filter_visibility=False
+        )
+        src_input = src_kps_std.unsqueeze(0)  # Add batch dimension
 
-        # Prepare Tensors
-        src_inter = cache_src['intermediate'].to(self.device)
-        trg_inter = cache_trg['intermediate'].to(self.device)
-        if src_inter.dim() == 2: src_inter = src_inter.unsqueeze(0)
-        if trg_inter.dim() == 2: trg_inter = trg_inter.unsqueeze(0)
-
-        # 3. Model Inference (BOTH Methods)
+        # 4. Model Inference (BOTH Methods)
         self.model.model.eval()
         with torch.no_grad():
-            feat1 = self.model.forward_unfrozen_blocks(src_inter)
-            feat2 = self.model.forward_unfrozen_blocks(trg_inter)
-
-            # Norm Source
-            src_kps_std = src_kps_raw.clone()
-            src_kps_std[:, 0] *= (self.standard_size / src_orig_w)
-            src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
-            src_input = src_kps_std.to(self.device).unsqueeze(0)
-
             # A. Global Prediction
             pred_global_norm = predict_keypoints(
                 feat1, feat2, src_input,
@@ -486,17 +455,11 @@ class PCKEvaluator:
                 temperature=0.1
             )
 
-        # 4. Denormalize
-        def denorm(p_norm):
-            p = p_norm.clone().squeeze(0).cpu()
-            p[:, 0] = (p[:, 0] + 1) / 2 * (trg_orig_w - 1)
-            p[:, 1] = (p[:, 1] + 1) / 2 * (trg_orig_h - 1)
-            return p
-
-        pred_g_orig = denorm(pred_global_norm)
-        pred_w_orig = denorm(pred_window_norm)
+        # 5. Denormalize using shared helper
+        pred_g_orig = denormalize_predictions(pred_global_norm, trg_orig_size).squeeze(0).cpu()
+        pred_w_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
         
-        # 5. Compute Metrics for Both
+        # 6. Compute Metrics for Both
         def calc_score(pred_kps):
             dist = torch.norm(pred_kps - trg_kps_raw, dim=-1)
             bbox_size = max(trg_bbox[2]-trg_bbox[0], trg_bbox[3]-trg_bbox[1]).item()

@@ -311,6 +311,81 @@ class Trainer():
                              f"Expected file: {cache_path}")
         return torch.load(cache_path, map_location='cpu')
 
+    def _prepare_feature_pair(self, src_name, trg_name, aug_idx_src=None, aug_idx_trg=None, requires_grad=True):
+        """Load cached features and run through unfrozen blocks.
+        
+        Args:
+            src_name: Source image name
+            trg_name: Target image name  
+            aug_idx_src: Optional augmentation index for source
+            aug_idx_trg: Optional augmentation index for target
+            requires_grad: If True, enable gradients for training
+            
+        Returns:
+            tuple: (feat1, feat2, src_orig_size, trg_orig_size)
+        """
+        src_data = self._load_cached_features(src_name, aug_idx=aug_idx_src)
+        trg_data = self._load_cached_features(trg_name, aug_idx=aug_idx_trg)
+        
+        src_intermediate = src_data['intermediate'].to(self.device)
+        trg_intermediate = trg_data['intermediate'].to(self.device)
+        
+        # Handle batch dimension
+        if src_intermediate.dim() == 2:
+            src_intermediate = src_intermediate.unsqueeze(0)
+        if trg_intermediate.dim() == 2:
+            trg_intermediate = trg_intermediate.unsqueeze(0)
+        
+        if requires_grad:
+            feat1 = self.model.forward_unfrozen_blocks(src_intermediate)
+            feat2 = self.model.forward_unfrozen_blocks(trg_intermediate)
+        else:
+            with torch.no_grad():
+                feat1 = self.model.forward_unfrozen_blocks(src_intermediate)
+                feat2 = self.model.forward_unfrozen_blocks(trg_intermediate)
+        
+        return feat1, feat2, src_data['orig_size'], trg_data['orig_size']
+
+    def _prepare_keypoints(self, src_kps, trg_kps, src_orig_size, trg_orig_size, filter_visibility=True):
+        """Convert, scale to standard_size, and optionally filter by visibility.
+        
+        Args:
+            src_kps, trg_kps: Raw keypoints (N, 2) or (N, 3) with visibility
+            src_orig_size, trg_orig_size: (W, H) tuples
+            filter_visibility: If True, remove invisible keypoints
+            
+        Returns:
+            tuple: (src_kps_scaled, trg_kps_scaled) in standard_size coordinates
+                   Both are (M, 2) tensors where M <= N if filtered
+        """
+        # Convert to tensors
+        if not isinstance(src_kps, torch.Tensor):
+            src_kps = torch.tensor(src_kps, dtype=torch.float32)
+            trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
+        
+        src_orig_w, src_orig_h = src_orig_size
+        trg_orig_w, trg_orig_h = trg_orig_size
+        
+        # Scale to standard_size
+        src_kps_std = src_kps.clone()
+        src_kps_std[:, 0] *= (self.model.standard_size / src_orig_w)
+        src_kps_std[:, 1] *= (self.model.standard_size / src_orig_h)
+        
+        trg_kps_std = trg_kps.clone()
+        trg_kps_std[:, 0] *= (self.model.standard_size / trg_orig_w)
+        trg_kps_std[:, 1] *= (self.model.standard_size / trg_orig_h)
+        
+        # Filter visibility
+        if filter_visibility and src_kps_std.shape[-1] == 3:
+            vis = (src_kps_std[:, 2] > 0) & (trg_kps_std[:, 2] > 0)
+            src_kps_std = src_kps_std[vis, :2]
+            trg_kps_std = trg_kps_std[vis, :2]
+        else:
+            src_kps_std = src_kps_std[:, :2]
+            trg_kps_std = trg_kps_std[:, :2]
+        
+        return src_kps_std.to(self.device), trg_kps_std.to(self.device)
+
     def train_step(self, batch, accumulation_steps=1):
         """Single training step using cached intermediate features.
         
@@ -322,11 +397,9 @@ class Trainer():
             accumulation_steps: Number of steps to accumulate gradients over
         """
         
-        # Get image names and keypoints
+        # Get image names
         src_name = batch['src_name']
         trg_name = batch['trg_name']
-        src_kps = batch['src_kps']
-        trg_kps = batch['trg_kps']
         
         # Randomly decide whether to use augmented features (50% chance each)
         src_aug_idx = None
@@ -337,45 +410,15 @@ class Trainer():
             if random.random() < 0.5:
                 trg_aug_idx = random.randint(0, self.num_augmentations - 1)
         
-        # Load cached INTERMEDIATE features from disk (lazy loading)
-        src_data = self._load_cached_features(src_name, aug_idx=src_aug_idx)
-        trg_data = self._load_cached_features(trg_name, aug_idx=trg_aug_idx)
+        # Load features and run forward pass (with gradients)
+        feat1, feat2, src_orig_size, trg_orig_size = self._prepare_feature_pair(
+            src_name, trg_name, src_aug_idx, trg_aug_idx, requires_grad=True
+        )
         
-        # Move to GPU for computation
-        src_intermediate = src_data['intermediate'].to(self.device)
-        trg_intermediate = trg_data['intermediate'].to(self.device)
-        src_orig_w, src_orig_h = src_data['orig_size']
-        trg_orig_w, trg_orig_h = trg_data['orig_size']
-        
-        # Run through UNFROZEN blocks (with gradients!)
-        feat1 = self.model.forward_unfrozen_blocks(src_intermediate)
-        feat2 = self.model.forward_unfrozen_blocks(trg_intermediate)
-        
-        # Convert keypoints to tensors
-        if not isinstance(src_kps, torch.Tensor):
-            src_kps = torch.tensor(src_kps, dtype=torch.float32)
-            trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
-        
-        # Scale keypoints from original image size to standard_size
-        src_kps = src_kps.clone()
-        src_kps[:, 0] = src_kps[:, 0] * (self.model.standard_size / src_orig_w)
-        src_kps[:, 1] = src_kps[:, 1] * (self.model.standard_size / src_orig_h)
-        
-        trg_kps = trg_kps.clone()
-        trg_kps[:, 0] = trg_kps[:, 0] * (self.model.standard_size / trg_orig_w)
-        trg_kps[:, 1] = trg_kps[:, 1] * (self.model.standard_size / trg_orig_h)
-        
-        src_kps = src_kps.to(self.device)
-        trg_kps = trg_kps.to(self.device)
-        
-        # Handle visibility: skip invisible keypoints
-        if src_kps.shape[-1] == 3:
-            vis = (src_kps[:, 2] > 0) & (trg_kps[:, 2] > 0)
-            src_kps_vis = src_kps[vis, :2]
-            trg_kps_vis = trg_kps[vis, :2]
-        else:
-            src_kps_vis = src_kps[:, :2] if src_kps.shape[-1] > 2 else src_kps
-            trg_kps_vis = trg_kps[:, :2] if trg_kps.shape[-1] > 2 else trg_kps
+        # Prepare keypoints (scale and filter visibility)
+        src_kps_vis, trg_kps_vis = self._prepare_keypoints(
+            batch['src_kps'], batch['trg_kps'], src_orig_size, trg_orig_size
+        )
         
         if len(src_kps_vis) == 0:
             return 0.0
@@ -409,49 +452,18 @@ class Trainer():
         
         src_name = batch['src_name']
         trg_name = batch['trg_name']
-        src_kps = batch['src_kps']
-        trg_kps = batch['trg_kps']
         
-        # Load cached features
-        src_data = self._load_cached_features(src_name)
-        trg_data = self._load_cached_features(trg_name)
+        # Load features (no gradients needed)
+        feat1, feat2, src_orig_size, trg_orig_size = self._prepare_feature_pair(
+            src_name, trg_name, requires_grad=False
+        )
         
-        src_intermediate = src_data['intermediate'].to(self.device)
-        trg_intermediate = trg_data['intermediate'].to(self.device)
-        src_orig_w, src_orig_h = src_data['orig_size']
-        trg_orig_w, trg_orig_h = trg_data['orig_size']
+        # Prepare keypoints (scale and filter visibility)
+        src_kps_vis, trg_kps_vis = self._prepare_keypoints(
+            batch['src_kps'], batch['trg_kps'], src_orig_size, trg_orig_size
+        )
         
-        # Forward pass (unfrozen blocks)
-        with torch.no_grad():
-            feat1 = self.model.forward_unfrozen_blocks(src_intermediate)
-            feat2 = self.model.forward_unfrozen_blocks(trg_intermediate)
-        
-        # Prepare Keypoints (Original -> Standard)
-        if not isinstance(src_kps, torch.Tensor):
-            src_kps = torch.tensor(src_kps, dtype=torch.float32)
-            trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
-        
-        src_kps_std = src_kps.clone()
-        src_kps_std[:, 0] = src_kps[:, 0] * (self.model.standard_size / src_orig_w)
-        src_kps_std[:, 1] = src_kps[:, 1] * (self.model.standard_size / src_orig_h)
-        
-        trg_kps_std = trg_kps.clone()
-        trg_kps_std[:, 0] = trg_kps[:, 0] * (self.model.standard_size / trg_orig_w)
-        trg_kps_std[:, 1] = trg_kps[:, 1] * (self.model.standard_size / trg_orig_h)
-        
-        src_kps_std = src_kps_std.to(self.device)
-        trg_kps_std = trg_kps_std.to(self.device)
-        
-        # 1. Compute Loss (Standard logic)
-        # Filter for visibility for Loss calculation
-        if src_kps_std.shape[-1] == 3:
-            vis = (src_kps_std[:, 2] > 0) & (trg_kps_std[:, 2] > 0)
-            src_kps_vis = src_kps_std[vis, :2]
-            trg_kps_vis = trg_kps_std[vis, :2]
-        else:
-            src_kps_vis = src_kps_std
-            trg_kps_vis = trg_kps_std
-            
+        # 1. Compute Loss
         with torch.no_grad():
             if len(src_kps_vis) > 0:
                 loss = the_new_loss(
@@ -465,15 +477,16 @@ class Trainer():
             else:
                 loss_val = 0.0
 
-        # 2. Compute PCK using Evaluator (Consistency!)
-        # Pass the Standard-Size keypoints and the Target Original Size for denormalization
-        trg_sizes = [(trg_orig_w, trg_orig_h)] # Batch size 1 assumption
-        
-        # We pass only the XY coordinates of the scaled source keypoints
-        src_kps_xy = src_kps_std[:, :2]
+        # 2. Compute PCK using Evaluator
+        # Need unfiltered keypoints for PCK (evaluator handles visibility via batch)
+        src_kps_all, _ = self._prepare_keypoints(
+            batch['src_kps'], batch['trg_kps'], src_orig_size, trg_orig_size, 
+            filter_visibility=False
+        )
+        trg_sizes = [trg_orig_size]
         
         pck_global, pck_window = self.evaluator.compute_metrics_with_sizes(
-            feat1, feat2, src_kps_xy, batch, trg_sizes, alpha=0.1
+            feat1, feat2, src_kps_all, batch, trg_sizes, alpha=0.1
         )
         
         return loss_val, pck_global, pck_window
