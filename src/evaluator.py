@@ -274,39 +274,45 @@ class PCKEvaluator:
             print("-" * 60)
 
         def print_by_category():
-            # Metric 1: Per-Keypoint PCK (Global & Per Category)
-            # Formula: Total Correct Points / Total Visible Points
-            global_pck_kps = df['is_correct_global'].mean()
-            cat_pck_kps = df.groupby('category')['is_correct_global'].mean()
-            # ---------------------------------------------------------
-            # Metric 2: Per-Image PCK (Global & Per Category)
-            # Formula: Average of (Correct / Visible) for each image pair
-            # grouped by pair_idx (and category to keep the label)
-            img_scores = df.groupby(['pair_idx', 'category'])['is_correct_global'].mean().reset_index()
+            # Metric 1: Per-Keypoint PCK (Global, Window & Per Category)
+            cat_pck_kps_g = df.groupby('category')['is_correct_global'].mean()
+            cat_pck_kps_w = df.groupby('category')['is_correct_window'].mean()
             
-            global_pck_img = img_scores['is_correct_global'].mean()
-            cat_pck_img = img_scores.groupby('category')['is_correct_global'].mean()
+            # Metric 2: Per-Image PCK (Global, Window & Per Category)
+            # Formula: Average of (Correct / Visible) for each image pair
+            img_scores = df.groupby(['pair_idx', 'category'])[['is_correct_global', 'is_correct_window']].mean().reset_index()
+            
+            cat_pck_img_g = img_scores.groupby('category')['is_correct_global'].mean()
+            cat_pck_img_w = img_scores.groupby('category')['is_correct_window'].mean()
 
             # Assemble Final Table
             summary = pd.DataFrame({
-                'PCK_Keypoint': cat_pck_kps,
-                'PCK_Image': cat_pck_img,
+                'Img_Global': cat_pck_img_g,
+                'Img_Window': cat_pck_img_w,
+                'Kps_Global': cat_pck_kps_g,
+                'Kps_Window': cat_pck_kps_w,
                 'Num_Images': img_scores['category'].value_counts()
             })
             
-            # Sort by PCK Image score
-            summary = summary.sort_values('PCK_Image', ascending=False)
+            # Sort by PCK Image Window score
+            summary = summary.sort_values('Img_Window', ascending=False)
 
-            print("="*80)
-            print(f"{'CATEGORY':<20} | {'PCK (Img)':<12} | {'PCK (Kps)':<12} | {'# IMAGES':<8}")
-            print("-" * 80)
+            print("="*105)
+            print(f"{'CATEGORY':<20} | {'IMG (G)':<10} | {'IMG (W)':<10} | {'KPS (G)':<10} | {'KPS (W)':<10} | {'# IMGS':<8}")
+            print("-" * 105)
             
             for cat, row in summary.iterrows():
-                print(f"{cat:<20} | {row['PCK_Image']:.2%}      | {row['PCK_Keypoint']:.2%}      | {row['Num_Images']:<8}")
+                print(f"{cat:<20} | {row['Img_Global']:<10.2%} | {row['Img_Window']:<10.2%} | {row['Kps_Global']:<10.2%} | {row['Kps_Window']:<10.2%} | {int(row['Num_Images']):<8}")
                 
-            print("-" * 80)
-            print(f"{'OVERALL (Mean)':<20} | {global_pck_img:.2%}      | {global_pck_kps:.2%}      | {len(img_scores)}")
-            print("=" * 80)
+            print("-" * 105)
+            # Use columns directly from dataframes to ensure overall mean is accurate across all samples
+            global_img_g = img_scores['is_correct_global'].mean()
+            global_img_w = img_scores['is_correct_window'].mean()
+            global_kps_g = df['is_correct_global'].mean()
+            global_kps_w = df['is_correct_window'].mean()
+            
+            print(f"{'OVERALL (Mean)':<20} | {global_img_g:<10.2%} | {global_img_w:<10.2%} | {global_kps_g:<10.2%} | {global_kps_w:<10.2%} | {len(img_scores)}")
+            print("=" * 105)
 
             # Save to file
             by_category_output_path = os.path.join(save_dir, 'summary_by_category.csv')
