@@ -57,7 +57,7 @@ class MobileSAMAdapter:
         
         # We only care about the Image Encoder (TinyViT)
         self.model = self.sam_model.image_encoder
-        
+
         # 2. Freeze / Unfreeze Logic
         # MobileSAM's TinyViT is structured into 'layers' (stages), not a flat list of blocks.
         # It typically has 4 stages.
@@ -116,17 +116,17 @@ class MobileSAMAdapter:
         if isinstance(img, np.ndarray):
             img = Image.fromarray(img)
         
-        # Resize logic: If target_size is provided, use it.
-        # Otherwise, ensure dimensions are divisible by patch_size for ViT.
-        w, h = img.size if target_size is None else target_size
-        new_w = (w // self.patch_size) * self.patch_size
-        new_h = (h // self.patch_size) * self.patch_size
+        # We strictly resize to STANDARD_SIZE (512)
+        # MobileSAM/TinyViT requires dimensions divisible by patch_size (16 or 32)
+        # 512 is safe.
+        target_h = self.standard_size
+        target_w = self.standard_size
         
         resize_transform = T.Compose([
-            T.Resize((new_h, new_w)),
+            T.Resize((target_h, target_w)), 
             T.ToTensor(),
-            # SAM Normalization
-            T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            # SAM Mean/Std
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
         return resize_transform(img).unsqueeze(0).to(self.device)
