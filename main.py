@@ -10,7 +10,6 @@ from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 from src.pck import compute_raw_distances
 from src.evaluator import PCKEvaluator
-from IPython.display import Image, display
 
 
 def main():
@@ -77,7 +76,7 @@ def main():
                              help="PCK threshold factor")
     eval_parser.add_argument("--split", type=str, default="val", choices=["test", "val"], 
                              help="Dataset split to evaluate on")
-    eval_parser.add_argument("--plot-pair", type=int, default=42,
+    eval_parser.add_argument("--plot-pair", type=int, default=None,
                              help="Print image bbased on index")
     
     args = parser.parse_args()
@@ -296,14 +295,11 @@ def evaluate(args):
     # 7. Run Evaluation
     evaluator = PCKEvaluator(trainer=trainer, device=device)
 
-    if args.plot_pair:
-        test_single_sample(trainer, device, eval_dataset, args.plot_pair,)
+    if args.plot_pair is not None:
+        test_single_sample(trainer, device, eval_dataset, args.plot_pair)
         return
     
     results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha{args.alpha}.csv"
-    
-    test_single_sample(trainer, device, eval_dataset, sample_id=42)
-    
     evaluator.evaluate(eval_loader, results_file, alpha=args.alpha)
     
     # 8. Print Summary
@@ -328,18 +324,6 @@ def test_single_sample(trainer, device, dataset, sample_id):
     output_dir = "evaluations/pictures"
     evaluator.evaluate_pair_by_index(sample_id, output_dir=output_dir)
 
-    expected_filename = f"pair_{sample_id}_comparison.png"
-    img_path = os.path.join(output_dir, expected_filename)
-
-
-    if os.path.exists(img_path):
-        print("\n")
-        print("="*40)
-        print(f"VISUALIZATION (Sample {sample_id})")
-        print("="*40)
-        display(Image(filename=img_path, width=800))
-    else:
-        print(f"Error: Image not found at {img_path}. Check if evaluate_pair_by_index ran correctly.")
 
 
 if __name__ == "__main__":
