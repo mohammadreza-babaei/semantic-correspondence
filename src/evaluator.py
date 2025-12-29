@@ -254,49 +254,83 @@ class PCKEvaluator:
                     'error': avg_error
                 })
 
-    def summarize_results(self, csv_path, alpha):
+    def process_results(csv_path, save_dir):
         """
         Reads the generated CSV and prints summary metrics for both methods.
         """
-        if not os.path.exists(csv_path):
-            print("CSV not found.")
-            return
+        df = pd.read_csv(csv_path)
 
-        print("\n" + "-"*60)
-        print(f"COMPUTING SUMMARY METRICS (Alpha={alpha})")
-        print("-" * 60)
-        
-        try:
-            df = pd.read_csv(csv_path)
-        except Exception as e:
-            print(f"Error reading CSV: {e}")
-            return
-            
         if len(df) == 0:
             print("CSV is empty.")
             return
 
         if 'is_visible' in df.columns:
+            n_total = len(df)
             df = df[df['is_visible'] == 1]
-        
-        # 1. Global Metrics
-        pck_kps_g = df['is_correct_global'].mean()
-        img_scores_g = df.groupby(['pair_idx', 'src_img'])['is_correct_global'].mean()
-        pck_img_g = img_scores_g.mean()
-        
-        # 2. Window Metrics
-        pck_kps_w = df['is_correct_window'].mean()
-        img_scores_w = df.groupby(['pair_idx', 'src_img'])['is_correct_window'].mean()
-        pck_img_w = img_scores_w.mean()
-        
-        print(f"Total Keypoints Evaluated: {len(df)}")
-        print(f"Total Images Evaluated:    {len(img_scores_g)}")
-        print("-" * 60)
-        print(f"{'METRIC':<20} | {'GLOBAL':<10} | {'WINDOW':<10} | {'DELTA':<10}")
-        print("-" * 60)
-        print(f"{'PCK (Per Keypoint)':<20} | {pck_kps_g:.2%}     | {pck_kps_w:.2%}     | {pck_kps_w - pck_kps_g:+.2%}")
-        print(f"{'PCK (Per Image)':<20} | {pck_img_g:.2%}     | {pck_img_w:.2%}     | {pck_img_w - pck_img_g:+.2%}")
-        print("-" * 60)
+            print(f"Filtered invisible keypoints: {n_total} -> {len(df)}")
+
+        def print_summary():
+            # 1. Global Metrics
+            pck_kps_g = df['is_correct_global'].mean()
+            img_scores_g = df.groupby(['pair_idx', 'src_img'])['is_correct_global'].mean()
+            pck_img_g = img_scores_g.mean()
+            
+            # 2. Window Metrics
+            pck_kps_w = df['is_correct_window'].mean()
+            img_scores_w = df.groupby(['pair_idx', 'src_img'])['is_correct_window'].mean()
+            pck_img_w = img_scores_w.mean()
+            
+            print(f"Total Keypoints Evaluated: {len(df)}")
+            print(f"Total Images Evaluated:    {len(img_scores_g)}")
+            print("-" * 60)
+            print(f"{'METRIC':<20} | {'GLOBAL':<10} | {'WINDOW':<10} | {'DELTA':<10}")
+            print("-" * 60)
+            print(f"{'PCK (Per Keypoint)':<20} | {pck_kps_g:.2%}     | {pck_kps_w:.2%}     | {pck_kps_w - pck_kps_g:+.2%}")
+            print(f"{'PCK (Per Image)':<20} | {pck_img_g:.2%}     | {pck_img_w:.2%}     | {pck_img_w - pck_img_g:+.2%}")
+            print("-" * 60)
+
+        def print_by_category():
+            # Metric 1: Per-Keypoint PCK (Global & Per Category)
+            # Formula: Total Correct Points / Total Visible Points
+            global_pck_kps = df['is_correct_global'].mean()
+            cat_pck_kps = df.groupby('category')['is_correct_global'].mean()
+            # ---------------------------------------------------------
+            # Metric 2: Per-Image PCK (Global & Per Category)
+            # Formula: Average of (Correct / Visible) for each image pair
+            # grouped by pair_idx (and category to keep the label)
+            img_scores = df.groupby(['pair_idx', 'category'])['is_correct_global'].mean().reset_index()
+            
+            global_pck_img = img_scores['is_correct_global'].mean()
+            cat_pck_img = img_scores.groupby('category')['is_correct_global'].mean()
+
+            # Assemble Final Table
+            summary = pd.DataFrame({
+                'PCK_Keypoint': cat_pck_kps,
+                'PCK_Image': cat_pck_img,
+                'Num_Images': img_scores['category'].value_counts()
+            })
+            
+            # Sort by PCK Image score
+            summary = summary.sort_values('PCK_Image', ascending=False)
+
+            print("="*80)
+            print(f"{'CATEGORY':<20} | {'PCK (Img)':<12} | {'PCK (Kps)':<12} | {'# IMAGES':<8}")
+            print("-" * 80)
+            
+            for cat, row in summary.iterrows():
+                print(f"{cat:<20} | {row['PCK_Image']:.2%}      | {row['PCK_Keypoint']:.2%}      | {row['Num_Images']:<8}")
+                
+            print("-" * 80)
+            print(f"{'OVERALL (Mean)':<20} | {global_pck_img:.2%}      | {global_pck_kps:.2%}      | {len(img_scores)}")
+            print("=" * 80)
+
+            # Save to file
+            by_category_output_path = os.path.join(save_dir, 'summary_by_category.csv')
+            summary.to_csv(by_category_output_path)
+            print(f"\nBy category table saved to: {by_category_output_path}")
+
+        print_summary()
+        print_by_category()
 
     def save_extremes(self, save_dir, k=5):
         """

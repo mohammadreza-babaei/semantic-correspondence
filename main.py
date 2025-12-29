@@ -300,11 +300,13 @@ def evaluate(args):
         return
     
     results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha{args.alpha}.csv"
-    evaluator.evaluate(eval_loader, results_file, alpha=args.alpha)
-    
-    # 8. Print Summary
-    evaluator.summarize_results(results_file, args.alpha)
 
+    # 8. Print Results
+    print("\n")
+    print(f"Results for {args.split} Alpha {args.alpha}:")
+    evaluator.evaluate(eval_loader, results_file, alpha=args.alpha)
+    PCKEvaluator.process_results(results_file, "evaluations/metrics")
+    
 
 
 def test_single_sample(trainer, device, dataset, sample_id):
