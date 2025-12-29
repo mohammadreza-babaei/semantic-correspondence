@@ -67,6 +67,8 @@ class Trainer():
             'learning_rates': []
         }
         self.fixed_lr = kwargs.get('fixed_lr', False)
+        self.weight_decay = kwargs.get('weight_decay', 0.01)
+        self.feature_reg = kwargs.get('feature_reg', 0.0)
         self.scheduler = None
         self.features_cache = None
 
@@ -436,6 +438,11 @@ class Trainer():
             temperature=0.1
         )
         
+        # Add L2 feature regularization if enabled
+        if self.feature_reg > 0:
+            feat_reg_loss = self.feature_reg * (feat1.pow(2).mean() + feat2.pow(2).mean())
+            loss = loss + feat_reg_loss
+        
         # Backward pass (gradients flow through unfrozen blocks)
         # Scale loss for gradient accumulation
         loss_scaled = loss / accumulation_steps
@@ -596,7 +603,7 @@ class Trainer():
         self.optimizer = torch.optim.AdamW(
             self.model.trainable_params,
             lr=self.learning_rate,
-            weight_decay=0.01
+            weight_decay=self.weight_decay
         )
 
         # Initialize scheduler with the correct total steps

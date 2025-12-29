@@ -24,6 +24,7 @@ class DINOv3Adapter:
         weights_path=None,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
+        dropout=0.0,
     ):
         """
         Initializes the DINOv3 model.
@@ -33,11 +34,16 @@ class DINOv3Adapter:
             weights_path (str, optional): Path to local .pth file. If None, downloads from Hub.
             device (str): Computation device.
             num_unfrozen_blocks (int): Number of transformer blocks to unfreeze.
+            dropout (float): Dropout rate for regularization (0.0 = no dropout).
         """
         self.patch_size = 16
         self.standard_size = STANDARD_SIZE
         self.device = device
         self.model_name = model_name
+        
+        # Setup dropout layer
+        self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
+        self.dropout = self.dropout.to(device)
 
         print(f"Loading local weights from: {weights_path}")
         self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
@@ -78,6 +84,8 @@ class DINOv3Adapter:
         
         # 2. Unfreeze the last N transformer blocks
         print(f"Total blocks: {len(self.model.blocks)}, Frozen: {self.num_frozen_blocks}, Unfrozen: {num_unfrozen_blocks}")
+        if dropout > 0:
+            print(f"Dropout rate: {dropout}")
         
         blocks_to_unfreeze = list(self.model.blocks)[-num_unfrozen_blocks:]
         for block in blocks_to_unfreeze:
@@ -195,6 +203,10 @@ class DINOv3Adapter:
         B, N, C = patch_tokens.shape
         
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
+        
+        # Apply dropout for regularization (only active during training)
+        feature_map = self.dropout(feature_map)
+        
         return feature_map
     
     def get_model_state(self):

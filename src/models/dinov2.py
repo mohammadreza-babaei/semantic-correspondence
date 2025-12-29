@@ -20,6 +20,7 @@ class DINOv2Adapter:
         weights_path=None,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
+        dropout=0.0,
     ):
         """
         Initializes the DINOv2 model.
@@ -30,11 +31,16 @@ class DINOv2Adapter:
             weights_path (str, optional): Path to custom .pth weights file. If None, loads pretrained from torch.hub.
             device (str): Computation device ('cuda' or 'cpu').
             num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
+            dropout (float): Dropout rate for regularization (0.0 = no dropout).
         """
         self.standard_size = STANDARD_SIZE
         self.device = device
         self.patch_size = 14 # DINOv2 usually uses patch size 14
         self.model_name = model_name
+        
+        # Setup dropout layer
+        self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
+        self.dropout = self.dropout.to(device)
         
         # Load model architecture and weights
         if weights_path is not None:
@@ -80,6 +86,8 @@ class DINOv2Adapter:
         num_blocks = len(self.model.blocks)
         print(f"Total transformer blocks: {num_blocks}")
         print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
+        if dropout > 0:
+            print(f"Dropout rate: {dropout}")
         
         blocks_to_unfreeze = list(self.model.blocks)[-num_unfrozen_blocks:]
         for block in blocks_to_unfreeze:
@@ -194,6 +202,9 @@ class DINOv2Adapter:
         assert H * W == N, f"Patch count {N} is not a perfect square"
         
         feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
+        
+        # Apply dropout for regularization (only active during training)
+        feature_map = self.dropout(feature_map)
         
         return feature_map
     

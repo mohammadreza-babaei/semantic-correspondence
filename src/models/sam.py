@@ -21,6 +21,7 @@ class SAMAdapter:
         weights_path=None,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
+        dropout=0.0,
     ):
         """
         Initializes the SAM model using the official segment_anything library.
@@ -33,11 +34,16 @@ class SAMAdapter:
             weights_path (str): Path to .pth weights file. Required for loading the model.
             device (str): Computation device.
             num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
+            dropout (float): Dropout rate for regularization (0.0 = no dropout).
         """
         self.device = device
         self.patch_size = 16  # SAM uses a patch size of 16 for its encoder
         self.standard_size = STANDARD_SIZE
         self.model_name = model_name
+        
+        # Setup dropout layer
+        self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
+        self.dropout = self.dropout.to(device)
         
         if model_name not in sam_model_registry:
             raise ValueError(f"Unknown model type: {model_name}. "
@@ -72,6 +78,8 @@ class SAMAdapter:
         num_blocks = len(self.model.blocks)
         print(f"Total transformer blocks: {num_blocks}")
         print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
+        if dropout > 0:
+            print(f"Dropout rate: {dropout}")
         
         blocks_to_unfreeze = self.model.blocks[-num_unfrozen_blocks:]
         for block in blocks_to_unfreeze:
@@ -186,6 +194,9 @@ class SAMAdapter:
         # x is (B, H, W, C), need to reshape to (B, C, H, W) for neck
         x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
         x = self.model.neck(x)
+        
+        # Apply dropout for regularization (only active during training)
+        x = self.dropout(x)
         
         return x
     

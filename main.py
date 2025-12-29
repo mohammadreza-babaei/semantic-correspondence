@@ -58,6 +58,15 @@ def main():
                                   help="WandB run name (optional)")
     fine_tune_parser.add_argument("--num-augmentations", type=int, default=3,
                                   help="Number of augmented versions to cache per image (0 to disable)")
+    
+    # Regularization arguments
+    fine_tune_parser.add_argument("--weight-decay", type=float, default=0.01,
+                                  help="L2 weight decay for AdamW optimizer (default: 0.01)")
+    fine_tune_parser.add_argument("--dropout", type=float, default=0.0,
+                                  help="Dropout rate for unfrozen blocks (0.0 = no dropout)")
+    fine_tune_parser.add_argument("--feature-reg", type=float, default=0.0,
+                                  help="L2 regularization weight on feature magnitudes (0.0 = disabled)")
+    
     fine_tune_parser.add_argument("--resume", type=str, default=None,
                                   help="Path to checkpoint to resume training from (e.g. checkpoints/best_model.pt)")
     
@@ -137,7 +146,8 @@ def fine_tune(args, model_type):
             model_name=args.model_name,
             weights_path=args.weights_path,
             device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            dropout=args.dropout
         )
 
     elif model_type == 'dinov3':
@@ -147,7 +157,8 @@ def fine_tune(args, model_type):
             model_name=args.model_name,
             weights_path=args.weights_path,
             device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            dropout=args.dropout
         )
     elif model_type == 'sam':
         SAM_DOWNLOAD_URL="https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints"
@@ -156,7 +167,8 @@ def fine_tune(args, model_type):
             model_name=args.model_name.replace("sam_", ""),
             weights_path=args.weights_path,
             device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            dropout=args.dropout
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -167,6 +179,8 @@ def fine_tune(args, model_type):
         num_unfrozen_blocks=args.num_unfrozen_blocks,
         learning_rate=args.lr,
         fixed_lr=args.fixed_lr,
+        weight_decay=args.weight_decay,
+        feature_reg=args.feature_reg,
     )
     
     # Resume training if requested
@@ -190,7 +204,9 @@ def fine_tune(args, model_type):
         wandb_run_name=args.wandb_run_name,
         accumulation_steps=args.accumulation_steps,
         shuffle=not args.no_shuffle,
-        num_augmentations=args.num_augmentations
+        num_augmentations=args.num_augmentations,
+        weight_decay=args.weight_decay,
+        feature_reg=args.feature_reg,
     )
     
     # Plot final results
