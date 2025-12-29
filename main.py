@@ -5,7 +5,7 @@ import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
 
-from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter
+from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter, MobileSAMAdapter
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 from src.pck import compute_raw_distances
@@ -22,7 +22,8 @@ def main():
     fine_tune_parser.add_argument("--model-name", type=str, default="dinov2_vits14",
                                   choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 
                                            'dinov3_vits16',
-                                           'sam_vit_b', 'sam_vit_l', 'sam_vit_h'],
+                                           'sam_vit_b', 'sam_vit_l', 'sam_vit_h',
+                                           'mobile_sam'],
                                   help="Model variant to use (DINOv2, DINOv3, or SAM)")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
@@ -56,7 +57,7 @@ def main():
                                   help="WandB project name")
     fine_tune_parser.add_argument("--wandb-run-name", type=str, default=None,
                                   help="WandB run name (optional)")
-    fine_tune_parser.add_argument("--num-augmentations", type=int, default=3,
+    fine_tune_parser.add_argument("--num-augmentations", type=int, default=0,
                                   help="Number of augmented versions to cache per image (0 to disable)")
     
     # Regularization arguments
@@ -95,6 +96,8 @@ def main():
         model_type = "dinov2"
     elif "dinov3" in args.model_name:
         model_type = "dinov3"
+    elif "mobile_sam" in args.model_name:
+        model_type = "mobile_sam"
     elif "sam" in args.model_name:
         model_type = "sam"
     else:
@@ -169,6 +172,14 @@ def fine_tune(args, model_type):
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
             dropout=args.dropout
+        )
+    elif model_type == 'mobile_sam':
+        # Default weights_path if None allows random init, but ideally user provides it
+        fine_tuner = MobileSAMAdapter(
+            model_name='vit_t', # MobileSAM is mapped to vit_t
+            weights_path=args.weights_path,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -261,6 +272,13 @@ def evaluate(args):
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
             weights_path=None
+        )
+    elif "mobile_sam" in args.model_name:
+        adapter = MobileSAMAdapter(
+            model_name='vit_t',
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=None # Initialize random, load fine-tuned next
         )
     else:
         raise ValueError(f"Unknown model: {args.model_name}")
