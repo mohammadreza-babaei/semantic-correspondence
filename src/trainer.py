@@ -550,6 +550,7 @@ class Trainer():
         shuffle = kwargs.get('shuffle', True)
         num_augmentations = kwargs.get('num_augmentations', 3)
         plot_every_epoch = kwargs.get('plot_every_epoch', True)
+        save_checkpoints = kwargs.get('save_checkpoints', True)
         
         # WandB Setup
         use_wandb = kwargs.get('use_wandb', False)
@@ -771,14 +772,16 @@ class Trainer():
                 # Save best model by validation loss
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    self.save_checkpoint(f"{save_path}/best_model_loss.pt", epoch, best_val_loss)
+                    if save_checkpoints:
+                        self.save_checkpoint(f"{save_path}/best_model_loss.pt", epoch, best_val_loss)
                     print(f"New best val loss: {val_loss:.4f}")
                 
                 # Save best model by PCK (use window PCK as primary metric)
                 if val_pck_w > best_val_pck:
                     best_val_pck = val_pck_w
                     self.best_val_pck = best_val_pck
-                    self.save_checkpoint(f"{save_path}/best_model_pck.pt", epoch, best_val_loss)
+                    if save_checkpoints:
+                        self.save_checkpoint(f"{save_path}/best_model_pck.pt", epoch, best_val_loss)
                     print(f"New best PCK (window): {val_pck_w:.4f}")
 
                 if plot_every_epoch:
@@ -808,14 +811,15 @@ class Trainer():
                 print(f"  PCK Window: {val_pck_w:.4f}")
             print(f"{'─'*40}\n")
             
-            self.save_checkpoint(f"{save_path}/epoch_{epoch+1}.pt", epoch + 1, best_val_loss)
-            
-            # Cleanup: keep only last 3 epoch checkpoints
-            epoch_files = sorted(Path(save_path).glob('epoch_*.pt'), 
-                                 key=lambda x: int(x.stem.split('_')[1]))
-            for old_ckpt in epoch_files[:-3]:
-                old_ckpt.unlink()
-                print(f"Removed old checkpoint: {old_ckpt.name}")
+            if save_checkpoints:
+                self.save_checkpoint(f"{save_path}/epoch_{epoch+1}.pt", epoch + 1, best_val_loss)
+                
+                # Cleanup: keep only last 3 epoch checkpoints
+                epoch_files = sorted(Path(save_path).glob('epoch_*.pt'), 
+                                     key=lambda x: int(x.stem.split('_')[1]))
+                for old_ckpt in epoch_files[:-3]:
+                    old_ckpt.unlink()
+                    print(f"Removed old checkpoint: {old_ckpt.name}")
         
         if use_wandb:
             wandb.finish()

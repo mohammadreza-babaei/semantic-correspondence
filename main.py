@@ -71,6 +71,8 @@ def main():
     
     fine_tune_parser.add_argument("--resume", type=str, default=None,
                                   help="Path to checkpoint to resume training from (e.g. checkpoints/best_model.pt)")
+    fine_tune_parser.add_argument("--no-save-checkpoints", action="store_true",
+                                  help="Disable saving checkpoints during training")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
 
@@ -228,6 +230,7 @@ def fine_tune(args, model_type):
         num_augmentations=args.num_augmentations,
         weight_decay=args.weight_decay,
         feature_reg=args.feature_reg,
+        save_checkpoints=not args.no_save_checkpoints,
     )
     
     # Plot final results
