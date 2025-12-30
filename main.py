@@ -68,6 +68,8 @@ def main():
                                   help="Dropout rate for unfrozen blocks (0.0 = no dropout)")
     fine_tune_parser.add_argument("--feature-reg", type=float, default=0.0,
                                   help="L2 regularization weight on feature magnitudes (0.0 = disabled)")
+    fine_tune_parser.add_argument("--unfreeze-neck", action="store_true",
+                                  help="Unfreeze SAM neck layers for training (SAM models only)")
     
     fine_tune_parser.add_argument("--resume", type=str, default=None,
                                   help="Path to checkpoint to resume training from (e.g. checkpoints/best_model.pt)")
@@ -81,6 +83,8 @@ def main():
                              help="Model variant to evaluate (must match the checkpoint)")
     eval_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                              help="Must match the training configuration")
+    eval_parser.add_argument("--unfreeze-neck", action="store_true",
+                             help="Unfreeze SAM neck layers (must match training configuration)")
     eval_parser.add_argument("--save-path", type=str, default="checkpoints/finetuned_dinov2",
                              help="Folder containing 'best_model.pt'")
     eval_parser.add_argument("--weights-path", type=str, default=None,
@@ -176,7 +180,8 @@ def fine_tune(args, model_type):
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout
+            dropout=args.dropout,
+            unfreeze_neck=args.unfreeze_neck
         )
     elif model_type == 'mobile_sam':
         # Default weights_path if None allows random init, but ideally user provides it
@@ -284,7 +289,8 @@ def evaluate(args):
             model_name=args.model_name.replace("sam_", ""),
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=None
+            weights_path=None,
+            unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
         )
     elif "mobile_sam" in args.model_name:
         adapter = MobileSAMAdapter(

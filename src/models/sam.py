@@ -22,6 +22,7 @@ class SAMAdapter:
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
         dropout=0.0,
+        unfreeze_neck=False,
     ):
         """
         Initializes the SAM model using the official segment_anything library.
@@ -35,6 +36,7 @@ class SAMAdapter:
             device (str): Computation device.
             num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
             dropout (float): Dropout rate for regularization (0.0 = no dropout).
+            unfreeze_neck (bool): Whether to unfreeze the neck projection layers for training.
         """
         self.device = device
         self.patch_size = 16  # SAM uses a patch size of 16 for its encoder
@@ -84,6 +86,12 @@ class SAMAdapter:
         blocks_to_unfreeze = self.model.blocks[-num_unfrozen_blocks:]
         for block in blocks_to_unfreeze:
             for param in block.parameters():
+                param.requires_grad = True
+        
+        # Unfreeze neck if requested
+        if unfreeze_neck:
+            print("Unfreezing neck layers...")
+            for param in self.model.neck.parameters():
                 param.requires_grad = True
         
         # Count trainable parameters
