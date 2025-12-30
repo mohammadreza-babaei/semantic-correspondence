@@ -403,14 +403,23 @@ class Trainer():
         src_name = batch['src_name']
         trg_name = batch['trg_name']
         
-        # Randomly decide whether to use augmented features (50% chance each)
+        # Randomly decide whether to use augmented features
+        # Uniform probability: 1/(num_augmentations + 1) for each version (original + augmented)
         src_aug_idx = None
         trg_aug_idx = None
         if hasattr(self, 'num_augmentations') and self.num_augmentations > 0:
-            if random.random() < 0.5:
-                src_aug_idx = random.randint(0, self.num_augmentations - 1)
-            if random.random() < 0.5:
-                trg_aug_idx = random.randint(0, self.num_augmentations - 1)
+            # With num_augmentations=7, we have 8 options: original + 7 augmented
+            # Each has 1/8 probability
+            total_options = self.num_augmentations + 1
+            src_choice = random.randint(0, total_options - 1)
+            trg_choice = random.randint(0, total_options - 1)
+            
+            # If choice is 0, use original (aug_idx = None)
+            # If choice is 1-N, use augmented with index (choice - 1)
+            if src_choice > 0:
+                src_aug_idx = src_choice - 1
+            if trg_choice > 0:
+                trg_aug_idx = trg_choice - 1
         
         # Load features and run forward pass (with gradients)
         feat1, feat2, src_orig_size, trg_orig_size = self._prepare_feature_pair(
