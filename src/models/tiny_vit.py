@@ -54,38 +54,47 @@ class TinyViTAdapter:
         for param in self.model.parameters():
             param.requires_grad = False
             
-        print("Unfreezing model stages...")
+        print("Unfreezing model blocks...")
         
-        # Locate stages
-        if hasattr(self.model, 'stages'):
-             stages = list(self.model.stages)
-        elif hasattr(self.model, 'layers'):
-             stages = list(self.model.layers)
+        # Collect all individual TinyVitBlock instances from all stages
+        # TinyViT has stages_0, stages_1, stages_2, stages_3 as separate attributes
+        all_blocks = []
+        stage_idx = 0
+        while hasattr(self.model, f'stages_{stage_idx}'):
+            stage = getattr(self.model, f'stages_{stage_idx}')
+            if hasattr(stage, 'blocks'):
+                stage_blocks = list(stage.blocks)
+                all_blocks.extend(stage_blocks)
+                print(f"  Stage {stage_idx}: {len(stage_blocks)} blocks")
+            stage_idx += 1
+        
+        total_blocks = len(all_blocks)
+        
+        if total_blocks > 0:
+            print(f"Total transformer blocks: {total_blocks}")
+            
+            # Block-level unfreezing for consistency with DINOv2/DINOv3/SAM
+            self.num_frozen_blocks = max(0, total_blocks - num_unfrozen_blocks)
+            self.num_unfrozen_blocks = min(num_unfrozen_blocks, total_blocks)
+            
+            print(f"Unfreezing last {self.num_unfrozen_blocks} transformer blocks...")
+            
+            # Unfreeze last N blocks
+            blocks_to_unfreeze = all_blocks[-self.num_unfrozen_blocks:]
+            for block_idx, block in enumerate(blocks_to_unfreeze):
+                global_idx = total_blocks - self.num_unfrozen_blocks + block_idx
+                for param in block.parameters():
+                    param.requires_grad = True
+                print(f"  Unfrozen block {global_idx}")
         else:
-            stages = [c for c in self.model.children() if isinstance(c, (nn.Sequential, nn.ModuleList))]
-
-        if not stages:
-            print("Warning: Could not automatically find 'stages'. Unfreezing last few named parameters instead.")
-            # Fallback: Just define it as 0 to avoid Attribute Error in Trainer
+            print("Warning: Could not find transformer blocks. Unfreezing last few parameters.")
             self.num_frozen_blocks = 0 
+            self.num_unfrozen_blocks = num_unfrozen_blocks
             
             params = list(self.model.parameters())
             cutoff = int(len(params) * 0.2 * num_unfrozen_blocks) 
             for p in params[-cutoff:]:
                 p.requires_grad = True
-        else:
-            total_stages = len(stages)
-            print(f"Found {total_stages} stages.")
-            
-            # --- FIX: DEFINE NUM_FROZEN_BLOCKS ---
-            self.num_frozen_blocks = total_stages - num_unfrozen_blocks
-            self.num_unfrozen_blocks = num_unfrozen_blocks
-            # -------------------------------------
-            
-            stages_to_unfreeze = stages[-num_unfrozen_blocks:]
-            for stage in stages_to_unfreeze:
-                for param in stage.parameters():
-                    param.requires_grad = True
 
         # Trainable stats
         trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
