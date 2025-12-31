@@ -161,6 +161,117 @@ class DINOv3Adapter:
             
             return x
     
+    def extract_features_from_block(self, image_tensor, target_block_idx):
+        """
+        Extract features up to and including a specific block depth.
+        
+        This method is useful for analyzing which transformer blocks provide
+        the best representations for semantic correspondence tasks. It extracts
+        features cumulatively through blocks 0 to target_block_idx.
+        
+        DINOv3 requires RoPE (Rotary Position Embeddings) which are generated
+        based on the spatial dimensions and passed to each transformer block.
+        
+        Args:
+            image_tensor: Preprocessed image tensor (B, C, H, W)
+            target_block_idx: Block index to extract through (inclusive)
+                             - Positive: 0-indexed (e.g., 8 = blocks 0-8)
+                             - Negative: from end (e.g., -1 = all blocks, -2 = all but last)
+        
+        Returns:
+            torch.Tensor: Features after processing through specified blocks (B, N, C)
+                         where N includes storage tokens (CLS + registers) and patch tokens
+            
+        Example:
+            # For a 12-block ViT:
+            # Extract features through block 8 (processes blocks 0-8)
+            features = model.extract_features_from_block(img, 8)
+            
+            # Extract through last block
+            features = model.extract_features_from_block(img, -1)
+        """
+        num_blocks = len(self.model.blocks)
+        
+        # Handle negative indexing
+        if target_block_idx < 0:
+            target_block_idx = num_blocks + target_block_idx
+        
+        # Validate block index
+        if target_block_idx < 0 or target_block_idx >= num_blocks:
+            raise ValueError(
+                f"Block index {target_block_idx} out of range. "
+                f"Model has {num_blocks} blocks (valid range: 0-{num_blocks-1} or -{num_blocks} to -1)."
+            )
+        
+        with torch.no_grad():
+            # 1. Use DINOv3's prepare_tokens_with_masks for proper tokenization
+            # This handles patch embedding, CLS token, and storage tokens
+            x, seq_shape = self.model.prepare_tokens_with_masks(image_tensor)
+            
+            # 2. Generate RoPE embeddings for this spatial shape
+            rope = self.model.rope_embed(H=seq_shape[0], W=seq_shape[1])
+            
+            # 3. Run through blocks 0 to target_block_idx (inclusive), passing rope to each
+            for i in range(target_block_idx + 1):
+                x = self.model.blocks[i](x, rope)
+            
+            # Store seq_shape for use in forward_from_block_features
+            self._last_seq_shape = seq_shape
+            
+            return x
+    
+    def forward_from_block_features(self, block_features):
+        """
+        Apply norm and reshape block features for downstream tasks.
+        
+        This is useful when you want to use features from a specific block
+        with the same post-processing as the standard pipeline.
+        
+        DINOv3 uses storage tokens (CLS + registers) which need to be removed
+        to extract only the spatial patch tokens.
+        
+        Args:
+            block_features: Features from extract_features_from_block (B, N, C)
+                           where N includes storage tokens and patches
+        
+        Returns:
+            torch.Tensor: Processed features (B, C, H, W) - ready for semantic correspondence
+        """
+        x = block_features.to(self.device)
+        
+        # Get seq_shape from cached value (set during extract_features_from_block)
+        # or infer from standard_size
+        if hasattr(self, '_last_seq_shape'):
+            seq_shape = self._last_seq_shape
+        else:
+            # Fallback: compute from standard_size
+            H = W = self.standard_size // self.patch_size
+            seq_shape = (H, W)
+            
+            # Verify we have enough tokens
+            n_patches = H * W
+            B, N, C = x.shape
+            if N < n_patches:
+                raise ValueError(f"Not enough tokens! N={N}, Expected at least {n_patches} (H={H}, W={W})")
+        
+        # Apply final norm (no RoPE needed for norm)
+        x = self.model.norm(x)
+        
+        # Remove storage tokens (CLS + Registers) to get patch tokens only
+        # Patch tokens are always the LAST H*W tokens in the sequence
+        H, W = seq_shape
+        patch_tokens = x[:, -H*W:]  # (B, H*W, C)
+        
+        B, N, C = patch_tokens.shape
+        
+        # Reshape to spatial grid
+        feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
+        
+        # Apply dropout (only active during training)
+        feature_map = self.dropout(feature_map)
+        
+        return feature_map
+    
     def forward_unfrozen_blocks(self, intermediate_features):
         """
         Run UNFROZEN blocks + norm with gradients.

@@ -60,7 +60,21 @@ class SAMAdapter:
             weights_path = None
         
         # weights_path can be None here -> SAM registry initializes random weights
-        self.sam_model = sam_model_registry[model_name](checkpoint=weights_path)
+        # We pass checkpoint=None and load manually to handle weights_only=False
+        # which is required for checkpoints containing numpy scalars (like recent pytorch versions)
+        self.sam_model = sam_model_registry[model_name](checkpoint=None)
+        
+        if weights_path is not None:
+            print(f"Loading weights from {weights_path}...")
+            try:
+                # Try loading with weights_only=False (required for safe load of numpy scalars in newer torch)
+                state_dict = torch.load(weights_path, map_location=self.device, weights_only=False)
+            except TypeError:
+                # Fallback for older torch versions without weights_only
+                state_dict = torch.load(weights_path, map_location=self.device)
+            
+            self.load_model_state(state_dict)
+            
         self.sam_model.to(self.device)
         self.sam_model.eval()
         # --------------------------------------
@@ -208,6 +222,98 @@ class SAMAdapter:
         
         return x
     
+    def extract_features_from_block(self, image_tensor, target_block_idx):
+        """
+        Extract features up to and including a specific block depth.
+        
+        This method is useful for analyzing which transformer blocks provide
+        the best representations for semantic correspondence tasks. It extracts
+        features cumulatively through blocks 0 to target_block_idx.
+        
+        Args:
+            image_tensor: Preprocessed image tensor (B, C, H, W)
+            target_block_idx: Block index to extract through (inclusive)
+                             - Positive: 0-indexed (e.g., 8 = blocks 0-8)
+                             - Negative: from end (e.g., -1 = all blocks, -2 = all but last)
+        
+        Returns:
+            torch.Tensor: Features after processing through specified blocks (B, H, W, C)
+            
+        Example:
+            # For a 12-block ViT:
+            # Extract features through block 8 (processes blocks 0-8)
+            features = model.extract_features_from_block(img, 8)
+            
+            # Extract through last block
+            features = model.extract_features_from_block(img, -1)
+        """
+        num_blocks = len(self.model.blocks)
+        
+        # Handle negative indexing
+        if target_block_idx < 0:
+            target_block_idx = num_blocks + target_block_idx
+        
+        # Validate block index
+        if target_block_idx < 0 or target_block_idx >= num_blocks:
+            raise ValueError(
+                f"Block index {target_block_idx} out of range. "
+                f"Model has {num_blocks} blocks (valid range: 0-{num_blocks-1} or -{num_blocks} to -1)."
+            )
+        
+        with torch.no_grad():
+            # 1. Run patch embedding - SAM returns (B, H, W, C)
+            x = self.model.patch_embed(image_tensor)
+            
+            # 2. Add positional embedding if present
+            if self.model.pos_embed is not None:
+                pos_embed = self.model.pos_embed
+                # Check if we need to interpolate positional embeddings
+                if pos_embed.shape[1:3] != x.shape[1:3]:
+                    # Interpolate pos_embed to match current spatial size
+                    pos_embed = pos_embed.permute(0, 3, 1, 2)
+                    pos_embed = F.interpolate(
+                        pos_embed, 
+                        size=(x.shape[1], x.shape[2]), 
+                        mode='bilinear', 
+                        align_corners=False
+                    )
+                    pos_embed = pos_embed.permute(0, 2, 3, 1)
+                x = x + pos_embed
+            
+            # 3. Run through blocks 0 to target_block_idx (inclusive)
+            for i in range(target_block_idx + 1):
+                x = self.model.blocks[i](x)
+            
+            return x
+
+    
+    def forward_from_block_features(self, block_features):
+        """
+        Apply neck and normalization to block features for downstream tasks.
+        
+        This is useful when you want to use features from a specific block
+        with the same post-processing as the standard pipeline.
+        
+        Args:
+            block_features: Features from extract_features_from_block (B, H, W, C)
+        
+        Returns:
+            torch.Tensor: Processed features (B, C, H, W) - ready for semantic correspondence
+        """
+        x = block_features.to(self.device)
+        
+        # Reshape to (B, C, H, W) for neck
+        x = x.permute(0, 3, 1, 2)
+        
+        # Apply neck (projection layers)
+        x = self.model.neck(x)
+        
+        # Apply dropout (only active during training)
+        x = self.dropout(x)
+        
+        return x
+    
+
     def get_model_state(self):
         """Returns the dictionary containing model weights and metadata."""
         return {
@@ -219,6 +325,10 @@ class SAMAdapter:
     
     def load_model_state(self, state_dict):
         """Restores model weights from a state dictionary."""
+        # Handle full checkpoint (Trainer saves it with 'model_state' key)
+        if "model_state" in state_dict:
+            state_dict = state_dict["model_state"]
+
         # Handle cases where the full checkpoint bundle is passed
         if "sam_model_state_dict" in state_dict:
             self.sam_model.load_state_dict(state_dict["sam_model_state_dict"])

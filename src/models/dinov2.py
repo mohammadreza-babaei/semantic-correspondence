@@ -52,7 +52,25 @@ class DINOv2Adapter:
             self.model = torch.hub.load('facebookresearch/dinov2', model_name, pretrained=False).to(self.device)
             
             print(f"Loading custom weights from: {weights_path}")
-            state_dict = torch.load(weights_path, map_location='cpu', weights_only=False)
+            checkpoint = torch.load(weights_path, map_location='cpu', weights_only=False)
+            
+            # Handle different checkpoint formats
+            if 'model_state' in checkpoint:
+                # Training checkpoint format (from Trainer)
+                state_dict = checkpoint['model_state']
+                print(f"Loading from training checkpoint (epoch {checkpoint.get('epoch', 'unknown')})")
+                
+                # Handle nested backbone_state_dict within model_state
+                if isinstance(state_dict, dict) and 'backbone_state_dict' in state_dict:
+                    state_dict = state_dict['backbone_state_dict']
+                    print("Extracting backbone_state_dict from model_state")
+            elif 'backbone_state_dict' in checkpoint:
+                # Model state format (from get_model_state)
+                state_dict = checkpoint['backbone_state_dict']
+                print(f"Loading from model state (model: {checkpoint.get('model_name', 'unknown')})")
+            else:
+                # Plain weights format
+                state_dict = checkpoint
             
             # Clean state dictionary keys to handle various prefixes
             new_state_dict = {}
@@ -66,7 +84,7 @@ class DINOv2Adapter:
             
             # Load the cleaned state dict
             msg = self.model.load_state_dict(new_state_dict, strict=False)
-            print(f"Weights loaded. Status: {msg}")
+            print(f"Weights loaded successfully!")
         else:
             # Load pretrained model from torch.hub
             print(f"Loading {model_name} with pretrained weights from torch.hub...")
@@ -171,6 +189,96 @@ class DINOv2Adapter:
                 x = block(x)
             
             return x
+    
+    def extract_features_from_block(self, image_tensor, target_block_idx):
+        """
+        Extract features up to and including a specific block depth.
+        
+        This method is useful for analyzing which transformer blocks provide
+        the best representations for semantic correspondence tasks. It extracts
+        features cumulatively through blocks 0 to target_block_idx.
+        
+        Args:
+            image_tensor: Preprocessed image tensor (B, C, H, W)
+            target_block_idx: Block index to extract through (inclusive)
+                             - Positive: 0-indexed (e.g., 8 = blocks 0-8)
+                             - Negative: from end (e.g., -1 = all blocks, -2 = all but last)
+        
+        Returns:
+            torch.Tensor: Features after processing through specified blocks (B, N, C)
+                         where N = num_patches + 1 (includes CLS token)
+            
+        Example:
+            # For a 12-block ViT:
+            # Extract features through block 8 (processes blocks 0-8)
+            features = model.extract_features_from_block(img, 8)
+            
+            # Extract through last block
+            features = model.extract_features_from_block(img, -1)
+        """
+        num_blocks = len(self.model.blocks)
+        
+        # Handle negative indexing
+        if target_block_idx < 0:
+            target_block_idx = num_blocks + target_block_idx
+        
+        # Validate block index
+        if target_block_idx < 0 or target_block_idx >= num_blocks:
+            raise ValueError(
+                f"Block index {target_block_idx} out of range. "
+                f"Model has {num_blocks} blocks (valid range: 0-{num_blocks-1} or -{num_blocks} to -1)."
+            )
+        
+        with torch.no_grad():
+            # 1. Run patch embedding
+            x = self.model.patch_embed(image_tensor)
+            
+            # 2. Add CLS token
+            cls_tokens = self.model.cls_token.expand(x.shape[0], -1, -1)
+            x = torch.cat((cls_tokens, x), dim=1)
+            
+            # 3. Add position embeddings
+            x = x + self.model.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
+            
+            # 4. Run through blocks 0 to target_block_idx (inclusive)
+            for i in range(target_block_idx + 1):
+                x = self.model.blocks[i](x)
+            
+            return x
+    
+    def forward_from_block_features(self, block_features):
+        """
+        Apply norm and reshape block features for downstream tasks.
+        
+        This is useful when you want to use features from a specific block
+        with the same post-processing as the standard pipeline.
+        
+        Args:
+            block_features: Features from extract_features_from_block (B, N, C)
+                           where N includes CLS token + patches
+        
+        Returns:
+            torch.Tensor: Processed features (B, C, H, W) - ready for semantic correspondence
+        """
+        x = block_features.to(self.device)
+        
+        # Apply final norm
+        x = self.model.norm(x)
+        
+        # Remove CLS token to get patch tokens only
+        patch_tokens = x[:, 1:]  # (B, N-1, C)
+        
+        # Reshape to spatial grid
+        B, N, C = patch_tokens.shape
+        H = W = int(N ** 0.5)
+        assert H * W == N, f"Patch count {N} is not a perfect square"
+        
+        feature_map = patch_tokens.permute(0, 2, 1).reshape(B, C, H, W)
+        
+        # Apply dropout (only active during training)
+        feature_map = self.dropout(feature_map)
+        
+        return feature_map
     
     def forward_unfrozen_blocks(self, intermediate_features):
         """

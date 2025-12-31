@@ -70,7 +70,6 @@ def main():
                                   help="L2 regularization weight on feature magnitudes (0.0 = disabled)")
     fine_tune_parser.add_argument("--unfreeze-neck", action="store_true",
                                   help="Unfreeze SAM neck layers for training (SAM models only)")
-    
     fine_tune_parser.add_argument("--resume", type=str, default=None,
                                   help="Path to checkpoint to resume training from (e.g. checkpoints/best_model.pt)")
     fine_tune_parser.add_argument("--no-save-checkpoints", action="store_true",
