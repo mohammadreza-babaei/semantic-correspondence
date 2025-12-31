@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 import os
+from .checkpoint_utils import safe_torch_load, extract_state_dict, clean_state_dict_keys
 
 
 # Standard image size for all feature extraction (divisible by patch_size=14)
@@ -52,38 +53,13 @@ class DINOv2Adapter:
             self.model = torch.hub.load('facebookresearch/dinov2', model_name, pretrained=False).to(self.device)
             
             print(f"Loading custom weights from: {weights_path}")
-            checkpoint = torch.load(weights_path, map_location='cpu', weights_only=False)
+            checkpoint = safe_torch_load(weights_path, map_location='cpu')
+            state_dict, format_info = extract_state_dict(checkpoint)
+            print(f"Loading from {format_info}")
             
-            # Handle different checkpoint formats
-            if 'model_state' in checkpoint:
-                # Training checkpoint format (from Trainer)
-                state_dict = checkpoint['model_state']
-                print(f"Loading from training checkpoint (epoch {checkpoint.get('epoch', 'unknown')})")
-                
-                # Handle nested backbone_state_dict within model_state
-                if isinstance(state_dict, dict) and 'backbone_state_dict' in state_dict:
-                    state_dict = state_dict['backbone_state_dict']
-                    print("Extracting backbone_state_dict from model_state")
-            elif 'backbone_state_dict' in checkpoint:
-                # Model state format (from get_model_state)
-                state_dict = checkpoint['backbone_state_dict']
-                print(f"Loading from model state (model: {checkpoint.get('model_name', 'unknown')})")
-            else:
-                # Plain weights format
-                state_dict = checkpoint
-            
-            # Clean state dictionary keys to handle various prefixes
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                # Remove common prefixes that might be present in saved checkpoints
-                k = k.replace("model.", "")
-                k = k.replace("base_model.model.", "")
-                k = k.replace("teacher.", "")
-                k = k.replace("backbone.", "")
-                new_state_dict[k] = v
-            
-            # Load the cleaned state dict
-            msg = self.model.load_state_dict(new_state_dict, strict=False)
+            # Clean state dictionary keys and load
+            state_dict = clean_state_dict_keys(state_dict)
+            msg = self.model.load_state_dict(state_dict, strict=False)
             print(f"Weights loaded successfully!")
         else:
             # Load pretrained model from torch.hub
@@ -325,11 +301,9 @@ class DINOv2Adapter:
             "model_name": self.model_name
         }
     
-    def load_model_state(self, state_dict):
-        """Restores model weights from a state dictionary."""
-        # Handle cases where the full checkpoint bundle is passed
-        if "backbone_state_dict" in state_dict:
-            self.model.load_state_dict(state_dict["backbone_state_dict"])
-        else:
-            self.model.load_state_dict(state_dict)
+    def load_model_state(self, checkpoint):
+        """Restores model weights from a checkpoint dictionary."""
+        state_dict, format_info = extract_state_dict(checkpoint)
+        print(f"Loading from {format_info}")
+        self.model.load_state_dict(state_dict)
         print(f"Model state loaded for {self.model_name}")

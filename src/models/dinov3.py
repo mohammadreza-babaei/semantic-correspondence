@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 import os
+from .checkpoint_utils import safe_torch_load, extract_state_dict, clean_state_dict_keys
 
 # Standard image size for DINOv3 feature extraction. 
 # 512 = 16 * 32 (closest multiple of 16 to the 518 used in DINOv2)
@@ -45,33 +46,25 @@ class DINOv3Adapter:
         self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
         self.dropout = self.dropout.to(device)
 
-        print(f"Loading local weights from: {weights_path}")
+        print(f"Loading {model_name} architecture...")
         self.model = torch.hub.load(REPO_SOURCE, model_name, pretrained=False).to(self.device)
 
-        # --- FIX: CHECK IF PATH EXISTS BEFORE LOADING ---
+        # Load weights if path provided
         if weights_path is not None:
             if os.path.exists(weights_path):
-                # 2. Load Weights (.pth)
-                state_dict = torch.load(weights_path, map_location="cpu", weights_only=False)
-
-                # 3. Clean Keys
-                new_state_dict = {}
-                for k, v in state_dict.items():
-                    # Remove Hugging Face specific prefixes
-                    k = k.replace("model.", "") 
-                    k = k.replace("base_model.model.", "")
-                    # Remove standard DINO prefixes
-                    k = k.replace("teacher.", "")
-                    k = k.replace("backbone.", "") 
-                    new_state_dict[k] = v
+                print(f"Loading weights from: {weights_path}")
+                checkpoint = safe_torch_load(weights_path, map_location='cpu')
+                state_dict, format_info = extract_state_dict(checkpoint)
+                print(f"Loading from {format_info}")
                 
-                # 4. Inject weights
-                msg = self.model.load_state_dict(new_state_dict, strict=False)
-                print(f"Weights loaded. Status: {msg}")
+                # Clean keys and load
+                state_dict = clean_state_dict_keys(state_dict)
+                msg = self.model.load_state_dict(state_dict, strict=False)
+                print(f"Weights loaded successfully!")
             else:
                 print(f"Warning: Weights path '{weights_path}' not found. Initializing with random weights.")
         else:
-            print("No weights_path provided. Initializing with random/base weights (expecting manual load).")
+            print("No weights_path provided. Initializing with random/base weights.")
         # ------------------------------------------------
         
         # Feature caching setup
@@ -329,11 +322,9 @@ class DINOv3Adapter:
             "model_name": self.model_name
         }
     
-    def load_model_state(self, state_dict):
-        """Restores model weights from a state dictionary."""
-        # Handle cases where the full checkpoint bundle is passed
-        if "backbone_state_dict" in state_dict:
-            self.model.load_state_dict(state_dict["backbone_state_dict"])
-        else:
-            self.model.load_state_dict(state_dict)
+    def load_model_state(self, checkpoint):
+        """Restores model weights from a checkpoint dictionary."""
+        state_dict, format_info = extract_state_dict(checkpoint)
+        print(f"Loading from {format_info}")
+        self.model.load_state_dict(state_dict)
         print(f"Model state loaded for {self.model_name}")

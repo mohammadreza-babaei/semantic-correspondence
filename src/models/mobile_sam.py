@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import os
 from pathlib import Path
+from .checkpoint_utils import extract_state_dict
 from mobile_sam import sam_model_registry
 
 
@@ -182,15 +183,12 @@ class MobileSAMAdapter:
             "model_name": self.model_name
         }
 
-    def load_model_state(self, state_dict):
-        """
-        Restores model weights.
-        """
-        # Handle various checkpoint formats
-        if "sam_model_state_dict" in state_dict:
-            self.sam_model.load_state_dict(state_dict["sam_model_state_dict"])
-        else:
-            # Fallback for loading raw weights directly
-            self.sam_model.load_state_dict(state_dict, strict=False)
-            
+    def load_model_state(self, checkpoint):
+        """Restores model weights from a checkpoint dictionary."""
+        state_dict, format_info = extract_state_dict(
+            checkpoint,
+            key_priority=['model_state', 'sam_model_state_dict']
+        )
+        print(f"Loading from {format_info}")
+        self.sam_model.load_state_dict(state_dict)
         print(f"Model state loaded for {self.model_name}")

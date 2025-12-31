@@ -7,6 +7,7 @@ import numpy as np
 from pathlib import Path
 from segment_anything import sam_model_registry
 import os
+from .checkpoint_utils import safe_torch_load, extract_state_dict
 
 
 # Standard image size for all feature extraction (divisible by patch_size=16)
@@ -66,14 +67,8 @@ class SAMAdapter:
         
         if weights_path is not None:
             print(f"Loading weights from {weights_path}...")
-            try:
-                # Try loading with weights_only=False (required for safe load of numpy scalars in newer torch)
-                state_dict = torch.load(weights_path, map_location=self.device, weights_only=False)
-            except TypeError:
-                # Fallback for older torch versions without weights_only
-                state_dict = torch.load(weights_path, map_location=self.device)
-            
-            self.load_model_state(state_dict)
+            checkpoint = safe_torch_load(weights_path, map_location=self.device)
+            self.load_model_state(checkpoint)
             
         self.sam_model.to(self.device)
         self.sam_model.eval()
@@ -323,18 +318,29 @@ class SAMAdapter:
             "model_name": self.model_name
         }
     
-    def load_model_state(self, state_dict):
-        """Restores model weights from a state dictionary."""
-        # Handle full checkpoint (Trainer saves it with 'model_state' key)
-        if "model_state" in state_dict:
-            state_dict = state_dict["model_state"]
-
-        # Handle cases where the full checkpoint bundle is passed
-        if "sam_model_state_dict" in state_dict:
-            self.sam_model.load_state_dict(state_dict["sam_model_state_dict"])
-        elif "backbone_state_dict" in state_dict:
-            # Fallback for old backbone-only checkpoints if they exist
-            self.model.load_state_dict(state_dict["backbone_state_dict"])
+    def load_model_state(self, checkpoint):
+        """Restores model weights from a checkpoint dictionary.
+        
+        Handles two formats:
+        - sam_model_state_dict: Full SAM model state (image_encoder + decoder + prompt)
+        - backbone_state_dict: Just the image encoder
+        """
+        # Handle Trainer checkpoint format (model_state wraps everything)
+        state = checkpoint
+        if "model_state" in checkpoint:
+            state = checkpoint["model_state"]
+        
+        # Prefer full SAM model state dict if available
+        if "sam_model_state_dict" in state:
+            print(f"Loading full SAM model state...")
+            self.sam_model.load_state_dict(state["sam_model_state_dict"])
+        elif "backbone_state_dict" in state:
+            # Fallback: load just the image encoder
+            print(f"Loading backbone/encoder state only...")
+            self.model.load_state_dict(state["backbone_state_dict"])
         else:
-            self.sam_model.load_state_dict(state_dict)
+            # Plain state dict - assume it's full SAM model format
+            print(f"Loading plain state dict as full SAM model...")
+            self.sam_model.load_state_dict(state)
+        
         print(f"Model state loaded for {self.model_name}")
