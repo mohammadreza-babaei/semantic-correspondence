@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 import os
-from .checkpoint_utils import safe_torch_load, extract_state_dict, clean_state_dict_keys, merge_lora_weights
+from .checkpoint_utils import safe_torch_load, extract_state_dict, clean_state_dict_keys, get_merged_state_dict
 from src.lora_utils import apply_lora
 
 
@@ -65,9 +65,8 @@ class DINOv2Adapter:
             state_dict, format_info = extract_state_dict(checkpoint)
             print(f"Loading from {format_info}")
             
-            # Clean state dictionary keys and merge LoRA weights if present
+            # Clean state dictionary keys
             state_dict = clean_state_dict_keys(state_dict)
-            state_dict = merge_lora_weights(state_dict)
             msg = self.model.load_state_dict(state_dict, strict=False)
             print(f"Weights loaded successfully!")
         else:
@@ -321,10 +320,14 @@ class DINOv2Adapter:
         return feature_map
     
     def get_model_state(self):
-        """Returns the dictionary containing model weights and metadata."""
+        """Returns the dictionary containing model weights and metadata.
+        
+        LoRA weights are automatically merged into base weights if present,
+        producing a clean state dict that loads without PEFT.
+        """
         return {
-            "backbone_state_dict": self.model.state_dict(),
-            "embed_dim": self.model.embed_dim,
+            "backbone_state_dict": get_merged_state_dict(self.model),
+            "embed_dim": self.backbone.embed_dim,
             "patch_size": self.patch_size,
             "model_name": self.model_name
         }
@@ -332,13 +335,10 @@ class DINOv2Adapter:
     def load_model_state(self, checkpoint):
         """Restores model weights from a checkpoint dictionary.
         
-        Automatically handles LoRA checkpoints by merging adapters.
+        Note: LoRA weights should already be merged at save time.
         """
         state_dict, format_info = extract_state_dict(checkpoint)
         print(f"Loading from {format_info}")
-        
-        # Merge LoRA weights if present
-        state_dict = merge_lora_weights(state_dict)
         
         self.model.load_state_dict(state_dict, strict=False)
         print(f"Model state loaded for {self.model_name}")

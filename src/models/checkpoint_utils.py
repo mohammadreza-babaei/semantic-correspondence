@@ -115,97 +115,35 @@ def clean_state_dict_keys(state_dict, prefixes_to_remove=None):
     return new_state_dict
 
 
-def merge_lora_weights(state_dict):
-    """Merge LoRA adapter weights back into the base layer weights.
+def get_merged_state_dict(model):
+    """Get a clean state dict from a model, merging LoRA weights if present.
     
-    Converts a state dict with LoRA structure:
-        layer.base_layer.weight
-        layer.lora_A.default.weight
-        layer.lora_B.default.weight
+    If the model is a PEFT model with LoRA adapters, this will merge the adapters
+    into the base weights and return a standard state dict with no LoRA keys.
     
-    Into a standard state dict:
-        layer.weight
-    
-    The merged weight is: W = W_base + (lora_B @ lora_A) * scaling
+    This should be called at checkpoint save time to produce portable weights
+    that can be loaded without PEFT.
     
     Args:
-        state_dict: State dict potentially containing LoRA weights
+        model: The PyTorch model (may be wrapped with PEFT)
         
     Returns:
-        New state dict with LoRA weights merged into base layers
+        A clean state dict with merged weights
     """
-    # Check if this is a LoRA checkpoint
-    has_lora = any('.lora_A.' in k or '.lora_B.' in k for k in state_dict.keys())
-    if not has_lora:
-        return state_dict
+    try:
+        import peft
+        if isinstance(model, peft.PeftModel):
+            print("Merging LoRA adapters into base model for checkpoint...")
+            # Get a merged copy without modifying the original
+            merged_model = model.merge_and_unload(progressbar=False)
+            state_dict = merged_model.state_dict()
+            print(f"LoRA merge complete - {len(state_dict)} parameters")
+            return state_dict
+    except ImportError:
+        pass
     
-    print("Detected LoRA checkpoint - merging LoRA weights into base layers...")
-    
-    new_state_dict = {}
-    processed_layers = set()
-    
-    for key in state_dict.keys():
-        # Handle LoRA layers
-        if '.lora_A.' in key or '.lora_B.' in key:
-            # Extract the base layer name
-            # Format: "prefix.layer_name.lora_A.default.weight" -> "prefix.layer_name"
-            if '.lora_A.' in key:
-                base_name = key.split('.lora_A.')[0]
-            else:
-                base_name = key.split('.lora_B.')[0]
-            
-            if base_name in processed_layers:
-                continue
-            
-            # Get all related keys
-            base_weight_key = f"{base_name}.base_layer.weight"
-            base_bias_key = f"{base_name}.base_layer.bias"
-            lora_a_key = f"{base_name}.lora_A.default.weight"
-            lora_b_key = f"{base_name}.lora_B.default.weight"
-            
-            # Check if we have the necessary components
-            if base_weight_key in state_dict and lora_a_key in state_dict and lora_b_key in state_dict:
-                # Merge: W = W_base + lora_B @ lora_A
-                base_weight = state_dict[base_weight_key]
-                lora_a = state_dict[lora_a_key]
-                lora_b = state_dict[lora_b_key]
-                
-                # Compute LoRA delta: lora_B @ lora_A
-                # lora_A: (rank, in_features), lora_B: (out_features, rank)
-                lora_delta = torch.mm(lora_b, lora_a)
-                
-                # Merge into base weight
-                merged_weight = base_weight + lora_delta
-                
-                # Save with standard naming (remove .base_layer)
-                output_key = f"{base_name}.weight"
-                new_state_dict[output_key] = merged_weight
-                
-                # Handle bias if present
-                if base_bias_key in state_dict:
-                    new_state_dict[f"{base_name}.bias"] = state_dict[base_bias_key]
-                
-                processed_layers.add(base_name)
-            else:
-                # Incomplete LoRA layer - skip for now
-                continue
-        
-        # Handle base_layer keys that weren't merged (no LoRA adapters)
-        elif '.base_layer.' in key:
-            # This is a base layer without LoRA adapters
-            base_name = key.split('.base_layer.')[0]
-            param_name = key.split('.base_layer.')[1]  # weight or bias
-            
-            if base_name not in processed_layers:
-                output_key = f"{base_name}.{param_name}"
-                new_state_dict[output_key] = state_dict[key]
-        
-        # Regular keys (not LoRA-related)
-        else:
-            new_state_dict[key] = state_dict[key]
-    
-    print(f"Merged {len(processed_layers)} LoRA layers")
-    return new_state_dict
+    # Not a PEFT model, return regular state dict
+    return model.state_dict()
 
 
 def load_weights(model, path, map_location='cpu', strict=True, clean_keys=True, 
@@ -213,7 +151,9 @@ def load_weights(model, path, map_location='cpu', strict=True, clean_keys=True,
     """High-level function to load weights into a model.
     
     Combines safe loading, state dict extraction, key cleaning, and application.
-    Automatically handles LoRA checkpoints by merging adapters into base weights.
+    
+    Note: LoRA weights should be merged at save time using get_merged_state_dict(),
+    so checkpoints should contain standard weights that load directly.
     
     Args:
         model: PyTorch model (nn.Module) to load weights into
@@ -237,9 +177,6 @@ def load_weights(model, path, map_location='cpu', strict=True, clean_keys=True,
     state_dict, format_info = extract_state_dict(checkpoint, key_priority)
     if verbose:
         print(f"Loading from {format_info}")
-    
-    # Merge LoRA weights if present
-    state_dict = merge_lora_weights(state_dict)
     
     # Clean keys if requested
     if clean_keys:
