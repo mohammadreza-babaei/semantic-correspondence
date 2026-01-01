@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as T
 from torch.utils.data import DataLoader
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -13,38 +12,8 @@ import wandb
 import random
 from tqdm import tqdm
 from src.evaluator import PCKEvaluator
+from src.cached_features_dataset import CachedFeaturesDataset
 import gc
-
-
-class GaussianNoise:
-    """Add Gaussian noise to a tensor image."""
-    def __init__(self, std=0.05):
-        self.std = std
-    
-    def __call__(self, tensor):
-        noise = torch.randn_like(tensor) * self.std
-        return torch.clamp(tensor + noise, 0, 1)
-
-
-def get_position_preserving_augmentations():
-    """Return a list of position-preserving augmentations.
-    
-    These augmentations only modify pixel values, not spatial positions,
-    so keypoint coordinates remain valid.
-    
-    Note: All transforms must work with float32 tensors (range 0-1).
-    """
-    return T.Compose([
-        T.RandomApply([
-            T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)
-        ], p=0.8),
-        T.RandomApply([
-            T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))
-        ], p=0.3),
-        T.RandomGrayscale(p=0.2),
-        T.RandomApply([GaussianNoise(std=0.05)], p=0.2),
-        T.RandomAdjustSharpness(sharpness_factor=2, p=0.2),
-    ])
 
 
 from src.new_loss import loss as the_new_loss, predict_keypoints, predict_keypoints_window
@@ -70,7 +39,7 @@ class Trainer():
         self.weight_decay = kwargs.get('weight_decay', 0.01)
         self.feature_reg = kwargs.get('feature_reg', 0.0)
         self.scheduler = None
-        self.features_cache = None
+        self.cached_dataset = None  # Set in train()
 
         # Initialize Evaluator for validation consistency
         self.evaluator = PCKEvaluator(self.model, self.device)
@@ -119,199 +88,6 @@ class Trainer():
         print(f"Checkpoint loaded. Resuming from epoch {self.start_epoch + 1}")
         return self.start_epoch
 
-    def cache_intermediate_features(self, dataset, num_augmentations=3):
-        """Extract and save all intermediate features for the given dataset.
-        
-        Memory-efficient approach: saves each image's features immediately to
-        individual files instead of accumulating all in RAM.
-        
-        Args:
-            dataset: Dataset with root path containing JPEGImages
-            num_augmentations: Number of augmented versions to cache per image
-        """
-        
-        # Create cache directory with model-specific subfolder
-        model_cache_name = f"{self.model.model_name.replace('/', '_')}_intermediate_{self.model.num_frozen_blocks}frozen"
-        cache_dir = Path('checkpoints') / 'feature_cache' / model_cache_name
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize empty cache populated lazily during training
-        self.features_cache = None  # Signal that we use file-based caching
-        self.cache_dir = cache_dir
-        self.num_augmentations = num_augmentations
-        
-        # Get augmentation pipeline
-        augment_transform = get_position_preserving_augmentations()
-        
-        # Collect ALL unique images from the JPEGImages directory (all splits)
-        print("Scanning all images in JPEGImages directory...")
-        jpeg_dir = dataset.root / 'JPEGImages'
-        unique_images = set()
-        
-        # Walk through all category subdirectories
-        for category_dir in jpeg_dir.iterdir():
-            if category_dir.is_dir():
-                category = category_dir.name
-                for img_file in category_dir.glob('*.jpg'):
-                    img_name = f"{category}/{img_file.stem}"
-                    unique_images.add(img_name)
-        
-        print(f"Found {len(unique_images)} unique images across all splits")
-        
-        # 1. Pre-scan cache directory to avoid thousands of file system calls
-        print(f"Scanning cache directory: {cache_dir}")
-        existing_files = set()
-        if cache_dir.exists():
-            for f in cache_dir.glob('*.pt'):
-                existing_files.add(f.name)
-        print(f"Found {len(existing_files)} already cached files.")
-
-        # 2. Identify missing tasks without building huge lists
-        # We'll use a generator approach or just iterate directly
-        
-        # Calculate totals for progress bars (still need some counting, but lightweight)
-        total_original = len(unique_images)
-        total_augmented = len(unique_images) * num_augmentations
-        
-        # Count missing (fast integer math, no string list storage if possible, 
-        # but for tqdm we might want a simple count first)
-        missing_original_count = 0
-        missing_augmented_count = 0
-        
-        for img_name in unique_images:
-            # Check original
-            fname = f"{img_name.replace('/', '_')}.pt"
-            if fname not in existing_files:
-                missing_original_count += 1
-            
-            # Check augmented
-            for aug_idx in range(num_augmentations):
-                fname_aug = f"{img_name.replace('/', '_')}_aug{aug_idx}.pt"
-                if fname_aug not in existing_files:
-                    missing_augmented_count += 1
-
-        print(f"Original features to extract: {missing_original_count}/{total_original}")
-        print(f"Augmented features to extract: {missing_augmented_count}/{total_augmented}")
-        
-        if missing_original_count == 0 and missing_augmented_count == 0:
-            print("All features already cached!")
-            return
-        
-        print(f"Extracting intermediate features at {self.model.standard_size}x{self.model.standard_size}...")
-        
-        # 3. Extract ORIGINAL features
-        if missing_original_count > 0:
-            pbar = tqdm(total=missing_original_count, desc="Extracting original features")
-            processed_count = 0
-            for img_name in unique_images:
-                fname = f"{img_name.replace('/', '_')}.pt"
-                if fname in existing_files:
-                    continue
-                
-                self._extract_and_cache_single(dataset, img_name, cache_dir)
-                pbar.update(1)
-                
-                # Periodic GC
-                processed_count += 1
-                if processed_count % 100 == 0:
-                    gc.collect()
-            pbar.close()
-        
-        # 4. Extract AUGMENTED features
-        if missing_augmented_count > 0:
-            pbar = tqdm(total=missing_augmented_count, desc="Extracting augmented features")
-            processed_count = 0
-            
-            # To avoid nested loops in the main flow that might confuse logic,
-            # we iterate images and then augmentations.
-            for img_name in unique_images:
-                for aug_idx in range(num_augmentations):
-                    fname_aug = f"{img_name.replace('/', '_')}_aug{aug_idx}.pt"
-                    if fname_aug in existing_files:
-                        continue
-                        
-                    self._extract_and_cache_single(dataset, img_name, cache_dir, 
-                                                   augment_transform=augment_transform, 
-                                                   aug_idx=aug_idx)
-                    pbar.update(1)
-                    
-                    # Periodic GC
-                    processed_count += 1
-                    if processed_count % 100 == 0:
-                        gc.collect()
-            pbar.close()
-        
-        # Final GC output
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        
-        print(f"Cached features to {cache_dir}")
-    
-    def _extract_and_cache_single(self, dataset, img_name, cache_dir, augment_transform=None, aug_idx=None):
-        """Extract and cache features for a single image.
-        
-        Args:
-            dataset: Dataset with root path
-            img_name: Image name in format 'category/image_stem'
-            cache_dir: Directory to save cache files
-            augment_transform: Optional augmentation to apply before extraction
-            aug_idx: Augmentation index for filename (None for original)
-        """
-        # Get image path
-        img_path = dataset.root / 'JPEGImages' / f'{img_name}.jpg'
-        
-        # Load image and get original size
-        img = Image.open(img_path).convert('RGB')
-        orig_w, orig_h = img.size
-        
-        # Preprocess at standard_size
-        img_tensor = self.model.preprocess_image_pil(img, target_size=(self.model.standard_size, self.model.standard_size))
-        
-        # Apply augmentation if specified (augmentations work on tensors)
-        if augment_transform is not None:
-            img_tensor = augment_transform(img_tensor)
-        
-        # Extract INTERMEDIATE features (output of frozen blocks)
-        with torch.no_grad():
-            intermediate = self.model.extract_intermediate_features(img_tensor)
-        
-        # Prepare feature data
-        feature_data = {
-            'intermediate': intermediate.cpu(),  # Move to CPU: (1, N, C)
-            'orig_size': (orig_w, orig_h),
-        }
-        
-        # Build cache path
-        if aug_idx is not None:
-            cache_path = cache_dir / f"{img_name.replace('/', '_')}_aug{aug_idx}.pt"
-        else:
-            cache_path = cache_dir / f"{img_name.replace('/', '_')}.pt"
-        
-        torch.save(feature_data, cache_path)
-        
-        # Free memory explicitly
-        del intermediate, img_tensor, img, feature_data
-
-    def _load_cached_features(self, img_name, aug_idx=None):
-        """Load cached features for a single image from disk.
-        
-        Args:
-            img_name: Image name in format 'category/image_stem'
-            aug_idx: Optional augmentation index (None for original)
-            
-        Returns:
-            dict with 'intermediate' tensor and 'orig_size' tuple
-        """
-        if aug_idx is not None:
-            cache_path = self.cache_dir / f"{img_name.replace('/', '_')}_aug{aug_idx}.pt"
-        else:
-            cache_path = self.cache_dir / f"{img_name.replace('/', '_')}.pt"
-        
-        if not cache_path.exists():
-            raise RuntimeError(f"Cached features not found for {img_name}. "
-                             f"Expected file: {cache_path}")
-        return torch.load(cache_path, map_location='cpu')
 
     def _prepare_feature_pair(self, src_name, trg_name, aug_idx_src=None, aug_idx_trg=None, requires_grad=True):
         """Load cached features and run through unfrozen blocks.
@@ -326,8 +102,8 @@ class Trainer():
         Returns:
             tuple: (feat1, feat2, src_orig_size, trg_orig_size)
         """
-        src_data = self._load_cached_features(src_name, aug_idx=aug_idx_src)
-        trg_data = self._load_cached_features(trg_name, aug_idx=aug_idx_trg)
+        src_data = self.cached_dataset.load_features(src_name, aug_idx=aug_idx_src)
+        trg_data = self.cached_dataset.load_features(trg_name, aug_idx=aug_idx_trg)
         
         src_intermediate = src_data['intermediate'].to(self.device)
         trg_intermediate = trg_data['intermediate'].to(self.device)
@@ -407,10 +183,11 @@ class Trainer():
         # Uniform probability: 1/(num_augmentations + 1) for each version (original + augmented)
         src_aug_idx = None
         trg_aug_idx = None
-        if hasattr(self, 'num_augmentations') and self.num_augmentations > 0:
+        num_augs = self.cached_dataset.num_augmentations if self.cached_dataset else 0
+        if num_augs > 0:
             # With num_augmentations=7, we have 8 options: original + 7 augmented
             # Each has 1/8 probability
-            total_options = self.num_augmentations + 1
+            total_options = num_augs + 1
             src_choice = random.randint(0, total_options - 1)
             trg_choice = random.randint(0, total_options - 1)
             
@@ -507,15 +284,6 @@ class Trainer():
         
         return loss_val, pck_global, pck_window
 
-    
-    
-    def clear_features_cache(self):
-        """Clear the features cache reference (files remain on disk for reuse)."""
-        self.features_cache = None
-        self.cache_dir = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
 
     def train(self, train_dataset, **kwargs):
         """
@@ -576,6 +344,14 @@ class Trainer():
         print("Pre-extracting features...")
         print("="*60)
         
+        # Create cached features dataset and extract features
+        self.cached_dataset = CachedFeaturesDataset(
+            base_dataset=train_dataset,
+            model=self.model,
+            num_augmentations=num_augmentations
+        )
+        self.cached_dataset.cache_features()
+        
         # Create data loaders
         train_loader = DataLoader(
             train_dataset,
@@ -584,8 +360,6 @@ class Trainer():
             num_workers=0, 
             collate_fn=self._collate_fn
         )
-
-        self.cache_intermediate_features(train_dataset, num_augmentations=num_augmentations)
 
         
         val_loader = None

@@ -92,6 +92,9 @@ class PCKEvaluator:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
         print(f"Evaluating on {len(dataloader)} pairs...")
+        # Ensure self.dataset is set for visualizations
+        self.dataset = self.dataloader.dataset
+        
         print(f"Standard Size for Inference: {self.standard_size}x{self.standard_size}")
         print(f"Saving per-keypoint details to: {output_path}")
 
@@ -356,12 +359,15 @@ class PCKEvaluator:
         """
         Helper to draw Source (Query) and Target (Prediction vs GT).
         """
-        # Load Images (Assuming paths are valid)
-        src_img = cv2.imread(res['src_path'])
-        trg_img = cv2.imread(res['trg_path'])
+        # Load Images
+        src_img_path = str(self.dataset.get_image_path(res['src_path']))
+        trg_img_path = str(self.dataset.get_image_path(res['trg_path']))
+        
+        src_img = cv2.imread(src_img_path)
+        trg_img = cv2.imread(trg_img_path)
 
         if src_img is None or trg_img is None:
-            print(f"Could not load image for visualization: {res['src_path']} or {res['trg_path']}")
+            print(f"Could not load image for visualization: {src_img_path} or {trg_img_path}")
             return
 
         src_img = cv2.cvtColor(src_img, cv2.COLOR_BGR2RGB)
@@ -513,8 +519,8 @@ class PCKEvaluator:
         """
 
         
-        src_img_path = self.dataset.root / 'JPEGImages' / f'{res["src_path"]}.jpg'
-        trg_img_path = self.dataset.root / 'JPEGImages' / f'{res["trg_path"]}.jpg'
+        src_img_path = str(self.dataset.get_image_path(res["src_path"]))
+        trg_img_path = str(self.dataset.get_image_path(res["trg_path"]))
 
         src_img = cv2.imread(src_img_path)
         trg_img = cv2.imread(trg_img_path)

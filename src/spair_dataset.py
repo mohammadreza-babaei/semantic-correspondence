@@ -73,6 +73,26 @@ class SPair71kPairs(Dataset):
                 data = json.load(f)
                 self.pairs.append(data)
     
+    def get_image_path(self, img_name: str) -> Path:
+        """Get the absolute path to an image by its name."""
+        return self.root / 'JPEGImages' / f'{img_name}.jpg'
+
+    def get_segmentation_path(self, img_name: str) -> Path:
+        """Get the absolute path to a segmentation mask by its name."""
+        return self.root / 'Segmentation' / f'{img_name}.png'
+
+    def get_images_dataset(self, transform: Optional[Any] = None) -> 'SPair71kImages':
+        """Factory method to get an SPair71kImages dataset sharing the same root.
+        
+        Args:
+            transform: Optional transform to be applied on images
+            
+        Returns:
+            SPair71kImages instance
+        """
+        # self.root is Path(root) / 'SPair-71k', we need the parent for the __init__ call
+        return SPair71kImages(str(self.root.parent), transform=transform)
+
     def __len__(self) -> int:
         return len(self.pairs)
     
@@ -82,16 +102,16 @@ class SPair71kPairs(Dataset):
         
         # Load source image and segmentation
         src_name = f"{category}/{data['src_imname'][:-4]}"
-        src_img_path = self.root / 'JPEGImages' / f'{src_name}.jpg'
-        src_seg_path = self.root / 'Segmentation' / f'{src_name}.png'
+        src_img_path = self.get_image_path(src_name)
+        src_seg_path = self.get_segmentation_path(src_name)
         
         src_img = Image.open(src_img_path).convert('RGB')
         src_seg = Image.open(src_seg_path)
         
         # Load target image and segmentation
         trg_name = f"{category}/{data['trg_imname'][:-4]}"
-        trg_img_path = self.root / 'JPEGImages' / f'{trg_name}.jpg'
-        trg_seg_path = self.root / 'Segmentation' / f'{trg_name}.png'
+        trg_img_path = self.get_image_path(trg_name)
+        trg_seg_path = self.get_segmentation_path(trg_name)
         
         trg_img = Image.open(trg_img_path).convert('RGB')
         trg_seg = Image.open(trg_seg_path)
@@ -150,19 +170,44 @@ class SPair71kImages(Dataset):
         self.root = Path(root) / 'SPair-71k'
         self.transform = transform
         
-        # Build image index
-        self.images = []
+        # Build image index by listing all images
+        self.images = self.list_all_images()
+    
+    def get_image_path(self, img_name: str) -> Path:
+        """Get the absolute path to an image by its name."""
+        return self.root / 'JPEGImages' / f'{img_name}.jpg'
+
+    def get_segmentation_path(self, img_name: str) -> Path:
+        """Get the absolute path to a segmentation mask by its name."""
+        return self.root / 'Segmentation' / f'{img_name}.png'
+
+    def get_annotation_path(self, img_name: str) -> Path:
+        """Get the absolute path to an image's annotation by its name."""
+        return self.root / 'ImageAnnotation' / f'{img_name}.json'
+
+    def list_all_images(self) -> List[str]:
+        """List all images in the SPair-71k dataset across all splits.
+        
+        Returns:
+            Sorted list of image names in format 'category/image_stem'
+        """
         jpeg_dir = self.root / 'JPEGImages'
         if not jpeg_dir.exists():
             raise FileNotFoundError(f"JPEGImages directory not found: {jpeg_dir}")
         
+        images = []
         for category_dir in sorted(jpeg_dir.glob('*')):
             if not category_dir.is_dir():
                 continue
             category = category_dir.name
             for img_file in sorted(category_dir.glob('*.jpg')):
                 img_name = f"{category}/{img_file.stem}"
-                self.images.append(img_name)
+                images.append(img_name)
+        
+        return images
+
+
+
     
     def __len__(self) -> int:
         return len(self.images)
@@ -171,9 +216,9 @@ class SPair71kImages(Dataset):
         img_name = self.images[idx]
         
         # Load image and segmentation
-        img_path = self.root / 'JPEGImages' / f'{img_name}.jpg'
-        seg_path = self.root / 'Segmentation' / f'{img_name}.png'
-        annot_path = self.root / 'ImageAnnotation' / f'{img_name}.json'
+        img_path = self.get_image_path(img_name)
+        seg_path = self.get_segmentation_path(img_name)
+        annot_path = self.get_annotation_path(img_name)
         
         img = Image.open(img_path).convert('RGB')
         seg = Image.open(seg_path)

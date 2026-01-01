@@ -142,8 +142,8 @@ def evaluate_single_block(model, dataloader, block_idx, alpha, standard_size, de
 
         
         # Load and preprocess images
-        src_img_path = Path(batch['dataset_root']) / 'JPEGImages' / f'{src_name}.jpg'
-        trg_img_path = Path(batch['dataset_root']) / 'JPEGImages' / f'{trg_name}.jpg'
+        src_img_path = dataloader.dataset.get_image_path(src_name)
+        trg_img_path = dataloader.dataset.get_image_path(trg_name)
         
         src_tensor = model.preprocess_image(str(src_img_path), target_size=(standard_size, standard_size))
         trg_tensor = model.preprocess_image(str(trg_img_path), target_size=(standard_size, standard_size))
@@ -339,7 +339,6 @@ def main():
                 # Skip image data - we'll load directly
                 continue
             batch_dict[key] = [item[key] for item in batch]
-        batch_dict['dataset_root'] = str(dataset.root)
         return batch_dict
     
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate_fn)
