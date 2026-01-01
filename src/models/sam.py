@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 from segment_anything import sam_model_registry
 import os
-from .checkpoint_utils import safe_torch_load, extract_state_dict
+from .checkpoint_utils import safe_torch_load, extract_state_dict, merge_lora_weights
 from src.lora_utils import apply_lora
 
 
@@ -349,6 +349,8 @@ class SAMAdapter:
         Handles two formats:
         - sam_model_state_dict: Full SAM model state (image_encoder + decoder + prompt)
         - backbone_state_dict: Just the image encoder
+        
+        Also automatically merges LoRA weights if present in the checkpoint.
         """
         # Handle Trainer checkpoint format (model_state wraps everything)
         state = checkpoint
@@ -358,14 +360,17 @@ class SAMAdapter:
         # Prefer full SAM model state dict if available
         if "sam_model_state_dict" in state:
             print(f"Loading full SAM model state...")
-            self.sam_model.load_state_dict(state["sam_model_state_dict"])
+            state_dict = merge_lora_weights(state["sam_model_state_dict"])
+            self.sam_model.load_state_dict(state_dict, strict=False)
         elif "backbone_state_dict" in state:
             # Fallback: load just the image encoder
             print(f"Loading backbone/encoder state only...")
-            self.model.load_state_dict(state["backbone_state_dict"])
+            state_dict = merge_lora_weights(state["backbone_state_dict"])
+            self.model.load_state_dict(state_dict, strict=False)
         else:
             # Plain state dict - assume it's full SAM model format
             print(f"Loading plain state dict as full SAM model...")
-            self.sam_model.load_state_dict(state)
+            state_dict = merge_lora_weights(state)
+            self.sam_model.load_state_dict(state_dict, strict=False)
         
         print(f"Model state loaded for {self.model_name}")

@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import timm
 import os
+from .checkpoint_utils import merge_lora_weights
 
 # TinyViT-21M-512 Native Resolution
 STANDARD_SIZE = 512
@@ -45,6 +46,9 @@ class TinyViTAdapter:
             checkpoint = torch.load(weights_path, map_location='cpu')
             if 'model' in checkpoint: checkpoint = checkpoint['model']
             if 'state_dict' in checkpoint: checkpoint = checkpoint['state_dict']
+            
+            # Merge LoRA weights if present
+            checkpoint = merge_lora_weights(checkpoint)
             
             self.model.load_state_dict(checkpoint, strict=False)
 
@@ -151,8 +155,14 @@ class TinyViTAdapter:
         }
 
     def load_model_state(self, state_dict):
+        """Load model state from checkpoint.
+        
+        Automatically handles LoRA checkpoints by merging adapters.
+        """
         if "model_state_dict" in state_dict:
-            self.model.load_state_dict(state_dict["model_state_dict"])
+            model_dict = merge_lora_weights(state_dict["model_state_dict"])
+            self.model.load_state_dict(model_dict, strict=False)
         else:
-            self.model.load_state_dict(state_dict, strict=False)
+            model_dict = merge_lora_weights(state_dict)
+            self.model.load_state_dict(model_dict, strict=False)
         print(f"Model state loaded for {self.model_name}")

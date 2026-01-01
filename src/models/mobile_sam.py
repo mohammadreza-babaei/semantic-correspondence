@@ -6,7 +6,7 @@ from PIL import Image
 import numpy as np
 import os
 from pathlib import Path
-from .checkpoint_utils import extract_state_dict
+from .checkpoint_utils import extract_state_dict, merge_lora_weights
 from mobile_sam import sam_model_registry
 
 
@@ -184,11 +184,18 @@ class MobileSAMAdapter:
         }
 
     def load_model_state(self, checkpoint):
-        """Restores model weights from a checkpoint dictionary."""
+        """Restores model weights from a checkpoint dictionary.
+        
+        Automatically handles LoRA checkpoints by merging adapters.
+        """
         state_dict, format_info = extract_state_dict(
             checkpoint,
             key_priority=['model_state', 'sam_model_state_dict']
         )
         print(f"Loading from {format_info}")
-        self.sam_model.load_state_dict(state_dict)
+        
+        # Merge LoRA weights if present
+        state_dict = merge_lora_weights(state_dict)
+        
+        self.sam_model.load_state_dict(state_dict, strict=False)
         print(f"Model state loaded for {self.model_name}")
