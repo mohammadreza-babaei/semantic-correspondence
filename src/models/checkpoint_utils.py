@@ -124,6 +124,9 @@ def get_merged_state_dict(model):
     This should be called at checkpoint save time to produce portable weights
     that can be loaded without PEFT.
     
+    IMPORTANT: This function works on a COPY of the model to preserve the original
+    LoRA adapters for continued training.
+    
     Args:
         model: The PyTorch model (may be wrapped with PEFT)
         
@@ -132,12 +135,17 @@ def get_merged_state_dict(model):
     """
     try:
         import peft
+        import copy
         if isinstance(model, peft.PeftModel):
             print("Merging LoRA adapters into base model for checkpoint...")
-            # Get a merged copy without modifying the original
-            merged_model = model.merge_and_unload(progressbar=False)
+            # CRITICAL: Copy the model first, since merge_and_unload() modifies in-place
+            # and would destroy the LoRA adapters on the original training model
+            model_copy = copy.deepcopy(model)
+            merged_model = model_copy.merge_and_unload(progressbar=False)
             state_dict = merged_model.state_dict()
             print(f"LoRA merge complete - {len(state_dict)} parameters")
+            # Cleanup the copy to free memory
+            del model_copy, merged_model
             return state_dict
     except ImportError:
         pass
