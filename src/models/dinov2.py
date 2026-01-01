@@ -9,10 +9,12 @@ import numpy as np
 from pathlib import Path
 import os
 from .checkpoint_utils import safe_torch_load, extract_state_dict, clean_state_dict_keys
+from src.lora_utils import apply_lora
 
 
 # Standard image size for all feature extraction (divisible by patch_size=14)
-STANDARD_SIZE = 518 # Multiple of 14 (14*37=518), used in the DINOv2 paper
+# Multiple of 14 (14*37=518), used in the DINOv2 paper
+STANDARD_SIZE = 518 
 
 class DINOv2Adapter:
     def __init__(
@@ -22,6 +24,9 @@ class DINOv2Adapter:
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
         dropout=0.0,
+        use_lora=False,
+        lora_rank=8,
+        lora_alpha=16,
     ):
         """
         Initializes the DINOv2 model.
@@ -31,8 +36,11 @@ class DINOv2Adapter:
                               'dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14'
             weights_path (str, optional): Path to custom .pth weights file. If None, loads pretrained from torch.hub.
             device (str): Computation device ('cuda' or 'cpu').
-            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
+            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze (or target with LoRA).
             dropout (float): Dropout rate for regularization (0.0 = no dropout).
+            use_lora (bool): Whether to use LoRA instead of full fine-tuning.
+            lora_rank (int): LoRA rank dimension.
+            lora_alpha (int): LoRA scaling factor.
         """
         self.standard_size = STANDARD_SIZE
         self.device = device
@@ -72,27 +80,38 @@ class DINOv2Adapter:
         self.num_unfrozen_blocks = num_unfrozen_blocks
         self.num_frozen_blocks = len(self.model.blocks) - num_unfrozen_blocks
         
-        # Freeze all parameters first
+        # 1. Freeze all parameters first
         for param in self.model.parameters():
             param.requires_grad = False
-        
-        # Unfreeze the last N transformer blocks
-        num_blocks = len(self.model.blocks)
-        print(f"Total transformer blocks: {num_blocks}")
-        print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
-        if dropout > 0:
-            print(f"Dropout rate: {dropout}")
-        
-        blocks_to_unfreeze = list(self.model.blocks)[-num_unfrozen_blocks:]
-        for block in blocks_to_unfreeze:
-            for param in block.parameters():
-                param.requires_grad = True
-        
-        # Also unfreeze the final norm layer
-        if hasattr(self.model, 'norm'):
-            for param in self.model.norm.parameters():
-                param.requires_grad = True
-            print("Unfreezing final norm layer...")
+            
+        # 2. Apply LoRA or Unfreeze
+        if use_lora:
+            print(f"Applying LoRA (Rank={lora_rank}, Alpha={lora_alpha}) to last {num_unfrozen_blocks} blocks...")
+            self.model = apply_lora(
+                self.model, 
+                model_type='dinov2', 
+                rank=lora_rank, 
+                alpha=lora_alpha, 
+                num_unfrozen_blocks=num_unfrozen_blocks
+            )
+        else:
+            # Standard Fine-tuning
+            num_blocks = len(self.model.blocks)
+            print(f"Total transformer blocks: {num_blocks}")
+            print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
+            if dropout > 0:
+                print(f"Dropout rate: {dropout}")
+            
+            blocks_to_unfreeze = list(self.model.blocks)[-num_unfrozen_blocks:]
+            for block in blocks_to_unfreeze:
+                for param in block.parameters():
+                    param.requires_grad = True
+            
+            # Also unfreeze the final norm layer
+            if hasattr(self.model, 'norm'):
+                for param in self.model.norm.parameters():
+                    param.requires_grad = True
+                print("Unfreezing final norm layer...")
         
         # Count trainable parameters
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -102,6 +121,14 @@ class DINOv2Adapter:
         
         # Filter to ensure we only get leaf tensors that require grad
         self.trainable_params = [p for p in self.model.parameters() if p.requires_grad and p.is_leaf]
+
+    @property
+    def backbone(self):
+        """Helper to access the underlying backbone even if wrapped by Peft."""
+        import peft
+        if isinstance(self.model, peft.PeftModel):
+            return self.model.base_model.model
+        return self.model
 
     def preprocess_image(self, image_path, target_size=None):
         """
@@ -149,17 +176,17 @@ class DINOv2Adapter:
         """
         with torch.no_grad():
             # Run patch embedding
-            x = self.model.patch_embed(image_tensor)
+            x = self.backbone.patch_embed(image_tensor)
             
             # Add CLS token
-            cls_tokens = self.model.cls_token.expand(x.shape[0], -1, -1)
+            cls_tokens = self.backbone.cls_token.expand(x.shape[0], -1, -1)
             x = torch.cat((cls_tokens, x), dim=1)
             
             # Add position embeddings
-            x = x + self.model.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
+            x = x + self.backbone.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
             
             # Run through FROZEN blocks only
-            for i, block in enumerate(self.model.blocks):
+            for i, block in enumerate(self.backbone.blocks):
                 if i >= self.num_frozen_blocks:
                     break
                 x = block(x)
@@ -207,18 +234,18 @@ class DINOv2Adapter:
         
         with torch.no_grad():
             # 1. Run patch embedding
-            x = self.model.patch_embed(image_tensor)
+            x = self.backbone.patch_embed(image_tensor)
             
             # 2. Add CLS token
-            cls_tokens = self.model.cls_token.expand(x.shape[0], -1, -1)
+            cls_tokens = self.backbone.cls_token.expand(x.shape[0], -1, -1)
             x = torch.cat((cls_tokens, x), dim=1)
             
             # 3. Add position embeddings
-            x = x + self.model.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
+            x = x + self.backbone.interpolate_pos_encoding(x, image_tensor.shape[2], image_tensor.shape[3])
             
             # 4. Run through blocks 0 to target_block_idx (inclusive)
             for i in range(target_block_idx + 1):
-                x = self.model.blocks[i](x)
+                x = self.backbone.blocks[i](x)
             
             return x
     
@@ -239,7 +266,7 @@ class DINOv2Adapter:
         x = block_features.to(self.device)
         
         # Apply final norm
-        x = self.model.norm(x)
+        x = self.backbone.norm(x)
         
         # Remove CLS token to get patch tokens only
         patch_tokens = x[:, 1:]  # (B, N-1, C)
@@ -271,11 +298,11 @@ class DINOv2Adapter:
         x = intermediate_features
         
         # Run through UNFROZEN blocks
-        for block in list(self.model.blocks)[-self.num_unfrozen_blocks:]:
+        for block in list(self.backbone.blocks)[-self.num_unfrozen_blocks:]:
             x = block(x)
         
         # Apply final norm
-        x = self.model.norm(x)
+        x = self.backbone.norm(x)
         
         # Remove CLS token to get patch tokens only
         patch_tokens = x[:, 1:]  # (B, N, C)

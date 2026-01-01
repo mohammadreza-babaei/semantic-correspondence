@@ -66,6 +66,11 @@ def main():
                                   help="L2 weight decay for AdamW optimizer (default: 0.01)")
     fine_tune_parser.add_argument("--dropout", type=float, default=0.0,
                                   help="Dropout rate for unfrozen blocks (0.0 = no dropout)")
+    
+    # LoRA arguments
+    fine_tune_parser.add_argument("--use-lora", action="store_true", help="Use LoRA instead of full fine-tuning")
+    fine_tune_parser.add_argument("--lora-rank", type=int, default=8, help="LoRA rank dimension")
+    fine_tune_parser.add_argument("--lora-alpha", type=int, default=16, help="LoRA scaling factor")
     fine_tune_parser.add_argument("--feature-reg", type=float, default=0.0,
                                   help="L2 regularization weight on feature magnitudes (0.0 = disabled)")
     fine_tune_parser.add_argument("--unfreeze-neck", action="store_true",
@@ -149,6 +154,8 @@ def fine_tune(args, model_type):
     print(f"  Model: {args.model_name}")
     print(f"  Unfrozen blocks: {args.num_unfrozen_blocks}")
     print(f"  Learning rate: {args.lr}")
+    if args.use_lora:
+        print(f"  LoRA Enabled: Rank={args.lora_rank}, Alpha={args.lora_alpha}")
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
@@ -158,7 +165,10 @@ def fine_tune(args, model_type):
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout
+            dropout=args.dropout,
+            use_lora=args.use_lora,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha
         )
 
     elif model_type == 'dinov3':
@@ -169,7 +179,10 @@ def fine_tune(args, model_type):
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout
+            dropout=args.dropout,
+            use_lora=args.use_lora,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha
         )
     elif model_type == 'sam':
         SAM_DOWNLOAD_URL="https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints"
@@ -180,7 +193,10 @@ def fine_tune(args, model_type):
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
             dropout=args.dropout,
-            unfreeze_neck=args.unfreeze_neck
+            unfreeze_neck=args.unfreeze_neck,
+            use_lora=args.use_lora,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha
         )
     elif model_type == 'mobile_sam':
         # Default weights_path if None allows random init, but ideally user provides it
