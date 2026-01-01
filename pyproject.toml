@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "numpy>=2.3.5",
     "opencv-python>=4.11.0.86",
+    "scikit-learn>=1.8.0",
     "scipy>=1.16.3",
     "segment-anything",
     "termcolor>=3.2.0",

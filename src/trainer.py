@@ -88,6 +88,19 @@ class Trainer():
         print(f"Checkpoint loaded. Resuming from epoch {self.start_epoch + 1}")
         return self.start_epoch
 
+    def cache_intermediate_features(self, dataset, num_augmentations=0):
+        """Pre-extract and cache features for a dataset using CachedFeaturesDataset.
+        
+        This handles the disk caching of intermediate features (outputs of frozen blocks)
+        to avoid redundant extraction during training/evaluation.
+        """
+        self.cached_dataset = CachedFeaturesDataset(
+            base_dataset=dataset,
+            model=self.model,
+            num_augmentations=num_augmentations
+        )
+        self.cached_dataset.cache_features()
+
 
     def _prepare_feature_pair(self, src_name, trg_name, aug_idx_src=None, aug_idx_trg=None, requires_grad=True):
         """Load cached features and run through unfrozen blocks.
@@ -344,13 +357,7 @@ class Trainer():
         print("Pre-extracting features...")
         print("="*60)
         
-        # Create cached features dataset and extract features
-        self.cached_dataset = CachedFeaturesDataset(
-            base_dataset=train_dataset,
-            model=self.model,
-            num_augmentations=num_augmentations
-        )
-        self.cached_dataset.cache_features()
+        self.cache_intermediate_features(train_dataset, num_augmentations=num_augmentations)
         
         # Create data loaders
         train_loader = DataLoader(
@@ -445,7 +452,7 @@ class Trainer():
         print(f"Validation samples: {len(val_dataset) if val_dataset else 0}")
         print(f"Device: {self.device}")
         print(f"Accumulation steps: {accumulation_steps}")
-        cached_count = len(list(self.cache_dir.glob('*.pt'))) if self.cache_dir else 0
+        cached_count = len(list(self.cached_dataset.cache_dir.glob('*.pt'))) if self.cached_dataset else 0
         print(f"Cached images: {cached_count}")
         print(f"{'='*60}\n")
         
