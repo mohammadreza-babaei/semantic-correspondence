@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 from segment_anything import sam_model_registry
 import os
-from .checkpoint_utils import safe_torch_load, extract_state_dict, get_merged_state_dict
+from .checkpoint_utils import load_weights, extract_state_dict, clean_state_dict_keys, get_merged_state_dict
 from src.lora_utils import apply_lora
 
 
@@ -72,9 +72,13 @@ class SAMAdapter:
         self.model = self.sam_model.image_encoder
         
         if weights_path is not None:
-            print(f"Loading weights from {weights_path}...")
-            checkpoint = safe_torch_load(weights_path, map_location=self.device)
-            self.load_model_state(checkpoint)
+            load_weights(
+                self.model, 
+                weights_path, 
+                map_location=self.device, 
+                strict=False,
+                verbose=True
+            )
             
         self.sam_model.to(self.device)
         self.sam_model.eval()
@@ -352,18 +356,14 @@ class SAMAdapter:
         Handles backbone_state_dict format (image encoder only).
         Note: LoRA weights should already be merged at save time.
         """
-        # Handle Trainer checkpoint format (model_state wraps everything)
-        state = checkpoint
-        if "model_state" in checkpoint:
-            state = checkpoint["model_state"]
+        # Use shared utility to extract and clean
+        state, format_info = extract_state_dict(checkpoint)
+        print(f"Loading from {format_info}")
+        
+        # Clean keys
+        state = clean_state_dict_keys(state)
         
         # Load the image encoder weights
-        if "backbone_state_dict" in state:
-            print(f"Loading backbone/encoder state...")
-            self.model.load_state_dict(state["backbone_state_dict"], strict=False)
-        else:
-            # Plain state dict - assume it's the image encoder weights directly
-            print(f"Loading plain state dict as backbone...")
-            self.model.load_state_dict(state, strict=False)
+        self.model.load_state_dict(state, strict=False)
         
         print(f"Model state loaded for {self.model_name}")

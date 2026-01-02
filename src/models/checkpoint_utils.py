@@ -79,6 +79,7 @@ DEFAULT_PREFIXES_TO_REMOVE = [
     "base_model.model.", # Hugging Face format
     "teacher.",         # DINO teacher model
     "backbone.",        # Common backbone prefix
+    "image_encoder.",   # SAM full model checkpoint prefix
 ]
 
 
