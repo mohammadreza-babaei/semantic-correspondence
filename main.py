@@ -23,7 +23,6 @@ def main():
                                   choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 
                                            'dinov3_vits16',
                                            'sam_vit_b', 'sam_vit_l', 'sam_vit_h',
-                                           'mobile_sam',
                                            'tiny_vit'],
                                   help="Model variant to use (DINOv2, DINOv3, or SAM)")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
@@ -107,8 +106,6 @@ def main():
         model_type = "dinov2"
     elif "dinov3" in args.model_name:
         model_type = "dinov3"
-    elif "mobile_sam" in args.model_name:
-        model_type = "mobile_sam"
     elif "sam" in args.model_name:
         model_type = "sam"
     elif "tiny_vit" in args.model_name:
@@ -197,14 +194,6 @@ def fine_tune(args, model_type):
             use_lora=args.use_lora,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha
-        )
-    elif model_type == 'mobile_sam':
-        # Default weights_path if None allows random init, but ideally user provides it
-        fine_tuner = MobileSAMAdapter(
-            model_name='vit_t', # MobileSAM is mapped to vit_t
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
         )
     elif model_type == 'tiny_vit':
         fine_tuner = TinyViTAdapter(
@@ -306,13 +295,6 @@ def evaluate(args):
             num_unfrozen_blocks=args.num_unfrozen_blocks,
             weights_path=None,
             unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
-        )
-    elif "mobile_sam" in args.model_name:
-        adapter = MobileSAMAdapter(
-            model_name='vit_t',
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=None # Initialize random, load fine-tuned next
         )
     elif "tiny_vit" in args.model_name:
         adapter = TinyViTAdapter(
