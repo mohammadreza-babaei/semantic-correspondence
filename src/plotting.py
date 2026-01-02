@@ -42,7 +42,8 @@ def plot_training_history(history, save_path=None):
 
     # Plot 3: PCK (Validation)
     val_epochs = range(1, len(history['val_pck_global']) + 1)
-    axes[2].plot(val_epochs, history['val_pck_global'], "g-o", label="PCK")
+    axes[2].plot(val_epochs, history['val_pck_global'], "g-o", label="Global PCK")
+    axes[2].plot(val_epochs, history['val_pck_window'], "m-s", label="Window PCK")
     axes[2].set_title("PCK over Epochs")
     axes[2].set_xlabel("Epoch")
     axes[2].set_ylabel("PCK")
