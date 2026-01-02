@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 import os
-from .checkpoint_utils import safe_torch_load, extract_state_dict, clean_state_dict_keys
+from .checkpoint_utils import safe_torch_load, extract_state_dict, clean_state_dict_keys, get_merged_state_dict
+from src.lora_utils import apply_lora
 
 # Standard image size for DINOv3 feature extraction. 
 # 512 = 16 * 32 (closest multiple of 16 to the 518 used in DINOv2)
@@ -26,6 +27,9 @@ class DINOv3Adapter:
         device='cuda' if torch.cuda.is_available() else 'cpu',
         num_unfrozen_blocks=2,
         dropout=0.0,
+        use_lora=False,
+        lora_rank=8,
+        lora_alpha=16,
     ):
         """
         Initializes the DINOv3 model.
@@ -34,8 +38,11 @@ class DINOv3Adapter:
             model_name (str): The DINOv3 model to load (e.g., 'dinov3_vits16').
             weights_path (str, optional): Path to local .pth file. If None, downloads from Hub.
             device (str): Computation device.
-            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze.
+            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze (or target with LoRA).
             dropout (float): Dropout rate for regularization (0.0 = no dropout).
+            use_lora (bool): Whether to use LoRA instead of full fine-tuning.
+            lora_rank (int): LoRA rank dimension.
+            lora_alpha (int): LoRA scaling factor.
         """
         self.patch_size = 16
         self.standard_size = STANDARD_SIZE
@@ -57,7 +64,7 @@ class DINOv3Adapter:
                 state_dict, format_info = extract_state_dict(checkpoint)
                 print(f"Loading from {format_info}")
                 
-                # Clean keys and load
+                # Clean keys
                 state_dict = clean_state_dict_keys(state_dict)
                 msg = self.model.load_state_dict(state_dict, strict=False)
                 print(f"Weights loaded successfully!")
@@ -74,22 +81,34 @@ class DINOv3Adapter:
         # 1. Freeze all parameters first
         for param in self.model.parameters():
             param.requires_grad = False
-        
-        # 2. Unfreeze the last N transformer blocks
-        print(f"Total blocks: {len(self.model.blocks)}, Frozen: {self.num_frozen_blocks}, Unfrozen: {num_unfrozen_blocks}")
-        if dropout > 0:
-            print(f"Dropout rate: {dropout}")
-        
-        blocks_to_unfreeze = list(self.model.blocks)[-num_unfrozen_blocks:]
-        for block in blocks_to_unfreeze:
-            for param in block.parameters():
-                param.requires_grad = True
-        
-        # 3. Unfreeze final norm layer
-        if hasattr(self.model, 'norm'):
-            for param in self.model.norm.parameters():
-                param.requires_grad = True
-            print("Unfreezing final norm layer...")
+            
+        # 2. Apply LoRA or Unfreeze
+        if use_lora:
+            print(f"Applying LoRA (Rank={lora_rank}, Alpha={lora_alpha}) to last {num_unfrozen_blocks} blocks...")
+            # apply_lora wraps the model and handles target modules
+            self.model = apply_lora(
+                self.model, 
+                model_type='dinov3', 
+                rank=lora_rank, 
+                alpha=lora_alpha, 
+                num_unfrozen_blocks=num_unfrozen_blocks
+            )
+        else:
+            # Standard Fine-tuning: Unfreeze the last N transformer blocks
+            print(f"Total blocks: {len(self.model.blocks)}, Frozen: {self.num_frozen_blocks}, Unfrozen: {num_unfrozen_blocks}")
+            if dropout > 0:
+                print(f"Dropout rate: {dropout}")
+            
+            blocks_to_unfreeze = list(self.model.blocks)[-num_unfrozen_blocks:]
+            for block in blocks_to_unfreeze:
+                for param in block.parameters():
+                    param.requires_grad = True
+            
+            # 3. Unfreeze final norm layer (if not using LoRA)
+            if hasattr(self.model, 'norm'):
+                for param in self.model.norm.parameters():
+                    param.requires_grad = True
+                print("Unfreezing final norm layer...")
         
         # Statistics
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -101,6 +120,14 @@ class DINOv3Adapter:
         print(f"Initializing {model_name} on {self.device}...")
 
         self.model.eval() # Set to evaluation mode
+
+    @property
+    def backbone(self):
+        """Helper to access the underlying backbone even if wrapped by Peft."""
+        import peft
+        if isinstance(self.model, peft.PeftModel):
+            return self.model.base_model.model
+        return self.model
 
     def preprocess_image(self, image_path, target_size=None):
         """Loads and preprocesses an image from path."""
@@ -138,13 +165,13 @@ class DINOv3Adapter:
         with torch.no_grad():
             # Step 1: Use DINOv3's prepare_tokens_with_masks for proper tokenization
             # This handles patch embedding, CLS token, and storage tokens
-            x, seq_shape = self.model.prepare_tokens_with_masks(image_tensor)
+            x, seq_shape = self.backbone.prepare_tokens_with_masks(image_tensor)
             
             # Step 2: Generate RoPE embeddings for this spatial shape
-            rope = self.model.rope_embed(H=seq_shape[0], W=seq_shape[1])
+            rope = self.backbone.rope_embed(H=seq_shape[0], W=seq_shape[1])
             
             # Step 3: Run through FROZEN blocks only, passing rope to each
-            for i, block in enumerate(self.model.blocks):
+            for i, block in enumerate(self.backbone.blocks):
                 if i >= self.num_frozen_blocks:
                     break
                 x = block(x, rope)
@@ -199,14 +226,14 @@ class DINOv3Adapter:
         with torch.no_grad():
             # 1. Use DINOv3's prepare_tokens_with_masks for proper tokenization
             # This handles patch embedding, CLS token, and storage tokens
-            x, seq_shape = self.model.prepare_tokens_with_masks(image_tensor)
+            x, seq_shape = self.backbone.prepare_tokens_with_masks(image_tensor)
             
             # 2. Generate RoPE embeddings for this spatial shape
-            rope = self.model.rope_embed(H=seq_shape[0], W=seq_shape[1])
+            rope = self.backbone.rope_embed(H=seq_shape[0], W=seq_shape[1])
             
             # 3. Run through blocks 0 to target_block_idx (inclusive), passing rope to each
             for i in range(target_block_idx + 1):
-                x = self.model.blocks[i](x, rope)
+                x = self.backbone.blocks[i](x, rope)
             
             # Store seq_shape for use in forward_from_block_features
             self._last_seq_shape = seq_shape
@@ -248,7 +275,7 @@ class DINOv3Adapter:
                 raise ValueError(f"Not enough tokens! N={N}, Expected at least {n_patches} (H={H}, W={W})")
         
         # Apply final norm (no RoPE needed for norm)
-        x = self.model.norm(x)
+        x = self.backbone.norm(x)
         
         # Remove storage tokens (CLS + Registers) to get patch tokens only
         # Patch tokens are always the LAST H*W tokens in the sequence
@@ -290,14 +317,21 @@ class DINOv3Adapter:
                  raise ValueError(f"Not enough tokens! N={N}, Expected at least {n_patches} (H={H}, W={W})")
         
         # Generate RoPE embeddings (must be on same device as x)
-        rope = self.model.rope_embed(H=seq_shape[0], W=seq_shape[1])
+        rope = self.backbone.rope_embed(H=seq_shape[0], W=seq_shape[1])
         
         # Run through UNFROZEN blocks with rope
-        for block in list(self.model.blocks)[-self.num_unfrozen_blocks:]:
+        # Note: If LoRA is active, self.model IS the PeftModel which wraps self.backbone.
+        # But here we are iterating over BLOCKS manually. 
+        # CAUTION: If we iterate self.backbone.blocks, we are skipping the LoRA adapters 
+        # if they are injected into the blocks! 
+        # Peft injects modules into the model structure. So self.backbone.blocks IS modified 
+        # and has LoraLayers in it. So efficient access via self.backbone is correct.
+        
+        for block in list(self.backbone.blocks)[-self.num_unfrozen_blocks:]:
             x = block(x, rope)
         
         # Apply final norm
-        x = self.model.norm(x)
+        x = self.backbone.norm(x)
         
         # Remove storage tokens (CLS + Registers) to get patch tokens only
         # We assume patch tokens are always the LAST H*W tokens in ViT
@@ -314,17 +348,25 @@ class DINOv3Adapter:
         return feature_map
     
     def get_model_state(self):
-        """Returns the dictionary containing model weights and metadata."""
+        """Returns the dictionary containing model weights and metadata.
+        
+        LoRA weights are automatically merged into base weights if present,
+        producing a clean state dict that loads without PEFT.
+        """
         return {
-            "backbone_state_dict": self.model.state_dict(),
-            "embed_dim": self.model.embed_dim,
+            "backbone_state_dict": get_merged_state_dict(self.model),
+            "embed_dim": self.backbone.embed_dim,
             "patch_size": self.patch_size,
             "model_name": self.model_name
         }
     
     def load_model_state(self, checkpoint):
-        """Restores model weights from a checkpoint dictionary."""
+        """Restores model weights from a checkpoint dictionary.
+        
+        Note: LoRA weights should already be merged at save time.
+        """
         state_dict, format_info = extract_state_dict(checkpoint)
         print(f"Loading from {format_info}")
-        self.model.load_state_dict(state_dict)
+        
+        self.model.load_state_dict(state_dict, strict=False)
         print(f"Model state loaded for {self.model_name}")

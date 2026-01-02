@@ -115,11 +115,53 @@ def clean_state_dict_keys(state_dict, prefixes_to_remove=None):
     return new_state_dict
 
 
+def get_merged_state_dict(model):
+    """Get a clean state dict from a model, merging LoRA weights if present.
+    
+    If the model is a PEFT model with LoRA adapters, this will merge the adapters
+    into the base weights and return a standard state dict with no LoRA keys.
+    
+    This should be called at checkpoint save time to produce portable weights
+    that can be loaded without PEFT.
+    
+    IMPORTANT: This function works on a COPY of the model to preserve the original
+    LoRA adapters for continued training.
+    
+    Args:
+        model: The PyTorch model (may be wrapped with PEFT)
+        
+    Returns:
+        A clean state dict with merged weights
+    """
+    try:
+        import peft
+        import copy
+        if isinstance(model, peft.PeftModel):
+            print("Merging LoRA adapters into base model for checkpoint...")
+            # CRITICAL: Copy the model first, since merge_and_unload() modifies in-place
+            # and would destroy the LoRA adapters on the original training model
+            model_copy = copy.deepcopy(model)
+            merged_model = model_copy.merge_and_unload(progressbar=False)
+            state_dict = merged_model.state_dict()
+            print(f"LoRA merge complete - {len(state_dict)} parameters")
+            # Cleanup the copy to free memory
+            del model_copy, merged_model
+            return state_dict
+    except ImportError:
+        pass
+    
+    # Not a PEFT model, return regular state dict
+    return model.state_dict()
+
+
 def load_weights(model, path, map_location='cpu', strict=True, clean_keys=True, 
                  key_priority=None, verbose=True):
     """High-level function to load weights into a model.
     
     Combines safe loading, state dict extraction, key cleaning, and application.
+    
+    Note: LoRA weights should be merged at save time using get_merged_state_dict(),
+    so checkpoints should contain standard weights that load directly.
     
     Args:
         model: PyTorch model (nn.Module) to load weights into

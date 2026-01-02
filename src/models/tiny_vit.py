@@ -151,8 +151,12 @@ class TinyViTAdapter:
         }
 
     def load_model_state(self, state_dict):
+        """Load model state from checkpoint.
+        
+        Note: LoRA weights should already be merged at save time.
+        """
         if "model_state_dict" in state_dict:
-            self.model.load_state_dict(state_dict["model_state_dict"])
+            self.model.load_state_dict(state_dict["model_state_dict"], strict=False)
         else:
             self.model.load_state_dict(state_dict, strict=False)
         print(f"Model state loaded for {self.model_name}")

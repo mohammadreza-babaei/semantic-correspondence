@@ -7,7 +7,8 @@ import numpy as np
 from pathlib import Path
 from segment_anything import sam_model_registry
 import os
-from .checkpoint_utils import safe_torch_load, extract_state_dict
+from .checkpoint_utils import safe_torch_load, extract_state_dict, get_merged_state_dict
+from src.lora_utils import apply_lora
 
 
 # Standard image size for all feature extraction (divisible by patch_size=16)
@@ -24,20 +25,23 @@ class SAMAdapter:
         num_unfrozen_blocks=2,
         dropout=0.0,
         unfreeze_neck=False,
+        use_lora=False,
+        lora_rank=8,
+        lora_alpha=16,
     ):
         """
         Initializes the SAM model using the official segment_anything library.
         
         Args:
-            model_name (str): Model type. Options:
-                              'vit_b' (Recommended for speed/memory)
-                              'vit_l'
-                              'vit_h'
+            model_name (str): Model type. Options: 'vit_b', 'vit_l', 'vit_h'
             weights_path (str): Path to .pth weights file. Required for loading the model.
             device (str): Computation device.
-            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze from the end.
+            num_unfrozen_blocks (int): Number of transformer blocks to unfreeze (or target with LoRA).
             dropout (float): Dropout rate for regularization (0.0 = no dropout).
-            unfreeze_neck (bool): Whether to unfreeze the neck projection layers for training.
+            unfreeze_neck (bool): Whether to unfreeze the neck projection layers.
+            use_lora (bool): Whether to use LoRA instead of full fine-tuning.
+            lora_rank (int): LoRA rank dimension.
+            lora_alpha (int): LoRA scaling factor.
         """
         self.device = device
         self.patch_size = 16  # SAM uses a patch size of 16 for its encoder
@@ -54,7 +58,6 @@ class SAMAdapter:
         
         print(f"Loading SAM {model_name} on {self.device}...")
 
-        # --- FIX: ROBUST CHECKPOINT LOADING ---
         # If path is provided but missing, warn and switch to None (Random Init)
         if weights_path is not None and not os.path.exists(weights_path):
             print(f"Warning: SAM weights path '{weights_path}' not found. Initializing with random weights.")
@@ -84,24 +87,36 @@ class SAMAdapter:
         # Freeze all parameters first
         for param in self.sam_model.parameters():
             param.requires_grad = False
-        
-        # Unfreeze the last N transformer blocks in the image encoder
-        num_blocks = len(self.model.blocks)
-        print(f"Total transformer blocks: {num_blocks}")
-        print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
-        if dropout > 0:
-            print(f"Dropout rate: {dropout}")
-        
-        blocks_to_unfreeze = self.model.blocks[-num_unfrozen_blocks:]
-        for block in blocks_to_unfreeze:
-            for param in block.parameters():
-                param.requires_grad = True
-        
-        # Unfreeze neck if requested
-        if unfreeze_neck:
-            print("Unfreezing neck layers...")
-            for param in self.model.neck.parameters():
-                param.requires_grad = True
+            
+        # Apply LoRA or Unfreeze
+        if use_lora:
+            print(f"Applying LoRA (Rank={lora_rank}, Alpha={lora_alpha}) to last {num_unfrozen_blocks} blocks...")
+            # Note: For SAM, self.model is the image_encoder. We apply LoRA to it.
+            self.model = apply_lora(
+                self.model, 
+                model_type='sam', 
+                rank=lora_rank, 
+                alpha=lora_alpha, 
+                num_unfrozen_blocks=num_unfrozen_blocks
+            )
+        else:
+            # Standard Fine-tuning
+            num_blocks = len(self.model.blocks)
+            print(f"Total transformer blocks: {num_blocks}")
+            print(f"Frozen blocks: {self.num_frozen_blocks}, Unfrozen blocks: {num_unfrozen_blocks}")
+            if dropout > 0:
+                print(f"Dropout rate: {dropout}")
+            
+            blocks_to_unfreeze = self.model.blocks[-num_unfrozen_blocks:]
+            for block in blocks_to_unfreeze:
+                for param in block.parameters():
+                    param.requires_grad = True
+            
+            # Unfreeze neck if requested
+            if unfreeze_neck:
+                print("Unfreezing neck layers...")
+                for param in self.model.neck.parameters():
+                    param.requires_grad = True
         
         # Count trainable parameters
         trainable_params = sum(p.numel() for p in self.sam_model.parameters() if p.requires_grad)
@@ -109,6 +124,14 @@ class SAMAdapter:
         print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
         
         self.trainable_params = [p for p in self.sam_model.parameters() if p.requires_grad and p.is_leaf]
+
+    @property
+    def backbone(self):
+        """Helper to access the underlying backbone (image encoder) even if wrapped by Peft."""
+        import peft
+        if isinstance(self.model, peft.PeftModel):
+            return self.model.base_model.model
+        return self.model
 
     def preprocess_image(self, image_path, target_size=None):
         """
@@ -159,11 +182,11 @@ class SAMAdapter:
         """
         with torch.no_grad():
             # Run patch embedding - SAM returns (B, H, W, C)
-            x = self.model.patch_embed(image_tensor)
+            x = self.backbone.patch_embed(image_tensor)
             
             # Add positional embedding if present
-            if self.model.pos_embed is not None:
-                pos_embed = self.model.pos_embed
+            if self.backbone.pos_embed is not None:
+                pos_embed = self.backbone.pos_embed
                 # Check if we need to interpolate positional embeddings
                 # pos_embed is (1, H_orig, W_orig, C), x is (B, H, W, C)
                 if pos_embed.shape[1:3] != x.shape[1:3]:
@@ -181,7 +204,7 @@ class SAMAdapter:
                 x = x + pos_embed
             
             # Run through FROZEN blocks only
-            for i, block in enumerate(self.model.blocks):
+            for i, block in enumerate(self.backbone.blocks):
                 if i >= self.num_frozen_blocks:
                     break
                 x = block(x)
@@ -205,12 +228,12 @@ class SAMAdapter:
         
         # Run through UNFROZEN blocks (input is already in B, H, W, C format)
         start_idx = self.num_frozen_blocks
-        for i in range(start_idx, len(self.model.blocks)):
-            x = self.model.blocks[i](x)
+        for i in range(start_idx, len(self.backbone.blocks)):
+            x = self.backbone.blocks[i](x)
         
         # x is (B, H, W, C), need to reshape to (B, C, H, W) for neck
         x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
-        x = self.model.neck(x)
+        x = self.backbone.neck(x)
         
         # Apply dropout for regularization (only active during training)
         x = self.dropout(x)
@@ -257,14 +280,16 @@ class SAMAdapter:
         
         with torch.no_grad():
             # 1. Run patch embedding - SAM returns (B, H, W, C)
-            x = self.model.patch_embed(image_tensor)
+            x = self.backbone.patch_embed(image_tensor)
             
             # 2. Add positional embedding if present
-            if self.model.pos_embed is not None:
-                pos_embed = self.model.pos_embed
+            if self.backbone.pos_embed is not None:
+                pos_embed = self.backbone.pos_embed
                 # Check if we need to interpolate positional embeddings
+                # pos_embed is (1, H_orig, W_orig, C), x is (B, H, W, C)
                 if pos_embed.shape[1:3] != x.shape[1:3]:
                     # Interpolate pos_embed to match current spatial size
+                    # Reshape to (1, C, H, W) for interpolation
                     pos_embed = pos_embed.permute(0, 3, 1, 2)
                     pos_embed = F.interpolate(
                         pos_embed, 
@@ -277,7 +302,7 @@ class SAMAdapter:
             
             # 3. Run through blocks 0 to target_block_idx (inclusive)
             for i in range(target_block_idx + 1):
-                x = self.model.blocks[i](x)
+                x = self.backbone.blocks[i](x)
             
             return x
 
@@ -301,7 +326,7 @@ class SAMAdapter:
         x = x.permute(0, 3, 1, 2)
         
         # Apply neck (projection layers)
-        x = self.model.neck(x)
+        x = self.backbone.neck(x)
         
         # Apply dropout (only active during training)
         x = self.dropout(x)
@@ -310,9 +335,13 @@ class SAMAdapter:
     
 
     def get_model_state(self):
-        """Returns the dictionary containing model weights and metadata."""
+        """Returns the dictionary containing model weights and metadata.
+        
+        LoRA weights are automatically merged into base weights if present,
+        producing a clean state dict that loads without PEFT.
+        """
         return {
-            "backbone_state_dict": self.model.state_dict(),
+            "backbone_state_dict": get_merged_state_dict(self.model),
             "sam_model_state_dict": self.sam_model.state_dict(),
             "patch_size": self.patch_size,
             "model_name": self.model_name
@@ -324,6 +353,8 @@ class SAMAdapter:
         Handles two formats:
         - sam_model_state_dict: Full SAM model state (image_encoder + decoder + prompt)
         - backbone_state_dict: Just the image encoder
+        
+        Note: LoRA weights should already be merged at save time.
         """
         # Handle Trainer checkpoint format (model_state wraps everything)
         state = checkpoint
@@ -333,14 +364,14 @@ class SAMAdapter:
         # Prefer full SAM model state dict if available
         if "sam_model_state_dict" in state:
             print(f"Loading full SAM model state...")
-            self.sam_model.load_state_dict(state["sam_model_state_dict"])
+            self.sam_model.load_state_dict(state["sam_model_state_dict"], strict=False)
         elif "backbone_state_dict" in state:
             # Fallback: load just the image encoder
             print(f"Loading backbone/encoder state only...")
-            self.model.load_state_dict(state["backbone_state_dict"])
+            self.model.load_state_dict(state["backbone_state_dict"], strict=False)
         else:
             # Plain state dict - assume it's full SAM model format
             print(f"Loading plain state dict as full SAM model...")
-            self.sam_model.load_state_dict(state)
+            self.sam_model.load_state_dict(state, strict=False)
         
         print(f"Model state loaded for {self.model_name}")
