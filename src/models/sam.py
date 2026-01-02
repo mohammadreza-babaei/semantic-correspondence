@@ -68,6 +68,9 @@ class SAMAdapter:
         # which is required for checkpoints containing numpy scalars (like recent pytorch versions)
         self.sam_model = sam_model_registry[model_name](checkpoint=None)
         
+        # Access the image encoder (vision encoder) - must be set before loading weights
+        self.model = self.sam_model.image_encoder
+        
         if weights_path is not None:
             print(f"Loading weights from {weights_path}...")
             checkpoint = safe_torch_load(weights_path, map_location=self.device)
@@ -76,9 +79,6 @@ class SAMAdapter:
         self.sam_model.to(self.device)
         self.sam_model.eval()
         # --------------------------------------
-        
-        # Access the image encoder (vision encoder)
-        self.model = self.sam_model.image_encoder
         
         # Store number of unfrozen blocks for feature caching logic
         self.num_unfrozen_blocks = num_unfrozen_blocks
@@ -342,7 +342,6 @@ class SAMAdapter:
         """
         return {
             "backbone_state_dict": get_merged_state_dict(self.model),
-            "sam_model_state_dict": self.sam_model.state_dict(),
             "patch_size": self.patch_size,
             "model_name": self.model_name
         }
@@ -350,10 +349,7 @@ class SAMAdapter:
     def load_model_state(self, checkpoint):
         """Restores model weights from a checkpoint dictionary.
         
-        Handles two formats:
-        - sam_model_state_dict: Full SAM model state (image_encoder + decoder + prompt)
-        - backbone_state_dict: Just the image encoder
-        
+        Handles backbone_state_dict format (image encoder only).
         Note: LoRA weights should already be merged at save time.
         """
         # Handle Trainer checkpoint format (model_state wraps everything)
@@ -361,17 +357,13 @@ class SAMAdapter:
         if "model_state" in checkpoint:
             state = checkpoint["model_state"]
         
-        # Prefer full SAM model state dict if available
-        if "sam_model_state_dict" in state:
-            print(f"Loading full SAM model state...")
-            self.sam_model.load_state_dict(state["sam_model_state_dict"], strict=False)
-        elif "backbone_state_dict" in state:
-            # Fallback: load just the image encoder
-            print(f"Loading backbone/encoder state only...")
+        # Load the image encoder weights
+        if "backbone_state_dict" in state:
+            print(f"Loading backbone/encoder state...")
             self.model.load_state_dict(state["backbone_state_dict"], strict=False)
         else:
-            # Plain state dict - assume it's full SAM model format
-            print(f"Loading plain state dict as full SAM model...")
-            self.sam_model.load_state_dict(state, strict=False)
+            # Plain state dict - assume it's the image encoder weights directly
+            print(f"Loading plain state dict as backbone...")
+            self.model.load_state_dict(state, strict=False)
         
         print(f"Model state loaded for {self.model_name}")

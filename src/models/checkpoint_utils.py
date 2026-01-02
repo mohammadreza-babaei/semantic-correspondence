@@ -39,19 +39,19 @@ def extract_state_dict(checkpoint, key_priority=None):
     
     Supports checkpoints from:
     - Trainer.save_checkpoint() format (nested under 'model_state')
-    - Model.get_model_state() format (with 'backbone_state_dict' or 'sam_model_state_dict')
+    - Model.get_model_state() format (with 'backbone_state_dict')
     - Plain state dict (direct weights)
     
     Args:
         checkpoint: Loaded checkpoint dictionary
         key_priority: List of keys to try in order. Defaults to common formats:
-                     ['model_state', 'backbone_state_dict', 'sam_model_state_dict']
+                     ['model_state', 'backbone_state_dict']
         
     Returns:
         tuple: (state_dict, format_info) where format_info describes what was found
     """
     if key_priority is None:
-        key_priority = ['model_state', 'backbone_state_dict', 'sam_model_state_dict']
+        key_priority = ['model_state', 'backbone_state_dict']
     
     state_dict = checkpoint
     format_info = "plain"
@@ -65,16 +65,10 @@ def extract_state_dict(checkpoint, key_priority=None):
         if isinstance(state_dict, dict) and 'backbone_state_dict' in state_dict:
             state_dict = state_dict['backbone_state_dict']
             format_info += " -> backbone_state_dict"
-        elif isinstance(state_dict, dict) and 'sam_model_state_dict' in state_dict:
-            state_dict = state_dict['sam_model_state_dict']
-            format_info += " -> sam_model_state_dict"
     # Handle direct model state formats
     elif 'backbone_state_dict' in checkpoint:
         state_dict = checkpoint['backbone_state_dict']
         format_info = f"model state (model: {checkpoint.get('model_name', 'unknown')})"
-    elif 'sam_model_state_dict' in checkpoint:
-        state_dict = checkpoint['sam_model_state_dict']
-        format_info = f"SAM model state (model: {checkpoint.get('model_name', 'unknown')})"
     
     return state_dict, format_info
 

@@ -318,8 +318,6 @@ def evaluate(args):
                 adapter.load_model_state(checkpoint['model_state'])
             elif 'backbone_state_dict' in checkpoint:
                 adapter.load_model_state(checkpoint)
-            elif 'sam_model_state_dict' in checkpoint:
-                adapter.load_model_state(checkpoint)
             else:
                 # Fallback: assume the dict itself is the state dict
                 adapter.load_model_state(checkpoint)
