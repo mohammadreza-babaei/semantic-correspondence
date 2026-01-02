@@ -93,7 +93,7 @@ class PCKEvaluator:
         
         print(f"Evaluating on {len(dataloader)} pairs...")
         # Ensure self.dataset is set for visualizations
-        self.dataset = self.dataloader.dataset
+        self.dataset = dataloader.dataset
         
         print(f"Standard Size for Inference: {self.standard_size}x{self.standard_size}")
         print(f"Saving per-keypoint details to: {output_path}")
