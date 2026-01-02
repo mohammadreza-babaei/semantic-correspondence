@@ -2,7 +2,7 @@
 Centralized checkpoint and weights loading utilities.
 
 This module provides shared functions for loading model checkpoints across
-different model types (SAM, DINOv2, DINOv3, MobileSAM) to eliminate code
+different model types (SAM, DINOv2, DINOv3, TinyViT) to eliminate code
 duplication and ensure consistent behavior.
 """
 
