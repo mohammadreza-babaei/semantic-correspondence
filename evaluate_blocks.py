@@ -47,6 +47,7 @@ from tqdm import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+from src.plotting import plot_block_weights
 from sklearn.decomposition import PCA
 
 from src.models import SAMAdapter, DINOv2Adapter, DINOv3Adapter
@@ -203,6 +204,23 @@ def evaluate_single_block(model, dataloader, block_idx, alpha, standard_size, de
         'errors_global': [],
         'errors_window': []
     }
+    
+    # Visualizing Weights Values 
+    if visualize and output_dir:
+        weights_save_path = os.path.join(output_dir, f'debug_block_{block_idx}', 'weights_heatmap.png')
+        try:
+            # We need to access the specific block from the model
+            # model is an Adapter, model.model is the SAM/DINO model
+            # SAM: model.model.blocks[block_idx]
+            # Verify structure first
+            if hasattr(model.model, 'blocks'):
+                 target_block = model.model.blocks[block_idx]
+                 os.makedirs(os.path.dirname(weights_save_path), exist_ok=True)
+                 plot_block_weights(target_block, block_idx, weights_save_path)
+            else:
+                print("Could not access blocks for weight visualization")
+        except Exception as e:
+            print(f"Failed to visualize weights for block {block_idx}: {e}")
     
     
     sample_count = 0

@@ -108,4 +108,60 @@ def _update_plots(history, fig, axes, current_epoch):
         fig.tight_layout()
         fig.canvas.draw()
         fig.canvas.flush_events()
+
+
+def plot_block_weights(block, block_idx, save_path):
+    """
+    Visualize the weights of a transformer block as heatmaps.
+    
+    Args:
+        block: The transformer block module (nn.Module)
+        block_idx: Index of the block
+        save_path: Path to save the visualization
+    """
+    # Identify weights to plot (focusing on Attention matrices)
+    weights = {}
+    
+    for name, param in block.named_parameters():
+        # process only 2D weights for heatmaps
+        if len(param.shape) != 2:
+            continue
+            
+        if 'attn.qkv' in name and 'weight' in name:
+            weights[f'Attention QKV'] = param.data.cpu().numpy()
+        elif 'attn.proj' in name and 'weight' in name:
+            weights[f'Attention Output'] = param.data.cpu().numpy()
+            
+    if not weights:
+        print(f"No 2D attention weights found for block {block_idx}")
+        return
+
+    n_weights = len(weights)
+    
+    fig, axes = plt.subplots(1, n_weights, figsize=(8 * n_weights, 8))
+    if n_weights == 1:
+        axes = [axes]
+    
+    for i, (name, data) in enumerate(weights.items()):
+        ax = axes[i]
+        
+        # Plot heatmap
+        # Use a diverging colormap centered at 0
+        limit = max(abs(data.min()), abs(data.max()))
+        im = ax.imshow(data, cmap='seismic', vmin=-limit, vmax=limit, interpolation='nearest', aspect='auto')
+        
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        
+        ax.set_title(f"{name}\nShape: {data.shape}", fontsize=12)
+        ax.set_xlabel("Output Dim")
+        ax.set_ylabel("Input Dim")
+        
+    plt.suptitle(f"Attention Weights - Block {block_idx}", fontsize=16)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        
+    plt.close(fig)
+
     
