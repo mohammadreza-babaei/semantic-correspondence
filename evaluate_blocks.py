@@ -36,6 +36,16 @@ Usage Examples:
         --data-root data/SPair-71k \
         --split test \
         --output-dir evaluations/dinov3_block_sweep
+    
+    # With visualization for specific samples (only these samples will be evaluated)
+    python evaluate_blocks.py \
+        --model-type vit_b \
+        --weights-path path/to/sam_vit_b.pth \
+        --data-root data/SPair-71k \
+        --split test \
+        --visualize \
+        --visualize-samples "0,5,10" \
+        --output-dir evaluations/block_sweep
 """
 
 import argparse
@@ -129,6 +139,54 @@ def visualize_pca(src_img_path, trg_img_path, src_pca, trg_pca, block_idx, sampl
     plt.close()
 
 
+def parse_visualize_samples(spec_str, dataset_size=None):
+    """
+    Parse the visualize-samples specification string into a list of sample indices.
+    
+    Args:
+        spec_str: String specifying samples to visualize
+                 - "all": visualize all samples
+                 - "0-4": visualize samples 0 through 4 (inclusive)
+                 - "0,5,10": visualize specific samples 0, 5, and 10
+        dataset_size: Total size of dataset (needed for "all")
+    
+    Returns:
+        List of sample indices to process, or None for all samples
+    """
+    spec_str = spec_str.strip().lower()
+    
+    if spec_str == "all":
+        return None  # None means process all samples
+    
+    # Parse range (e.g., "0-4")
+    if '-' in spec_str:
+        parts = spec_str.split('-')
+        if len(parts) == 2:
+            try:
+                start = int(parts[0])
+                end = int(parts[1])
+                return list(range(start, end + 1))
+            except ValueError:
+                print(f"Warning: Invalid range format '{spec_str}', defaulting to first 5 samples")
+                return list(range(5))
+    
+    # Parse comma-separated list (e.g., "0,5,10")
+    if ',' in spec_str:
+        try:
+            sample_indices = [int(x.strip()) for x in spec_str.split(',')]
+            return sorted(sample_indices)
+        except ValueError:
+            print(f"Warning: Invalid sample list '{spec_str}', defaulting to first 5 samples")
+            return list(range(5))
+    
+    # Try to parse as single number
+    try:
+        single_idx = int(spec_str)
+        return [single_idx]
+    except ValueError:
+        print(f"Warning: Invalid format '{spec_str}', defaulting to first 5 samples")
+        return list(range(5))
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -172,24 +230,29 @@ def parse_args():
                        help='Directory for results and visualizations')
     
     parser.add_argument('--visualize', action='store_true',
-                       help='Enable PCA visualization of features for the first few samples')
+                       help='Enable PCA visualization of features. When enabled, only specified samples will be processed.')
+    parser.add_argument('--visualize-samples', type=str, default='0-4',
+                       help='Samples to visualize and evaluate (e.g., "0-4" for first 5 samples, "0,5,10" for specific samples, or "all" for all samples). Only used when --visualize is enabled.')
     
     return parser.parse_args()
 
 
-def evaluate_single_block(model, dataloader, block_idx, alpha, standard_size, device, num_samples=None, visualize=False, output_dir=None):
+def evaluate_single_block(model, dataset, block_idx, alpha, standard_size, device, num_samples=None, visualize=False, sample_indices=None, output_dir=None):
     """
     Evaluate PCK for features extracted through a specific block depth.
     Uses cumulative extraction (blocks 0 through block_idx).
     
     Args:
         model: SAMAdapter instance
-        dataloader: DataLoader for evaluation pairs
+        dataset: Dataset for evaluation pairs
         block_idx: Block index to evaluate through (inclusive)
         alpha: PCK threshold
         standard_size: Image size for feature extraction
         device: torch device
         num_samples: Optional limit on number of samples
+        visualize: Whether to enable visualization
+        sample_indices: List of specific sample indices to process, or None for all samples
+        output_dir: Directory for saving visualizations
     
     Returns:
         dict: Results containing PCK metrics and per-sample details
@@ -222,31 +285,43 @@ def evaluate_single_block(model, dataloader, block_idx, alpha, standard_size, de
         except Exception as e:
             print(f"Failed to visualize weights for block {block_idx}: {e}")
     
+    # Determine which samples to process
+    if sample_indices is None:
+        # Process all samples
+        indices_to_process = range(len(dataset))
+        if num_samples:
+            indices_to_process = range(min(num_samples, len(dataset)))
+    else:
+        # Process only specified samples
+        indices_to_process = sample_indices
+        if num_samples:
+            indices_to_process = sample_indices[:num_samples]
     
-    sample_count = 0
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Block {block_idx}")):
-
-        if num_samples and sample_count >= num_samples:
-            break
+    print(f"Processing {len(indices_to_process)} samples")
+    
+    # Process selected samples
+    for sample_idx in tqdm(list(indices_to_process), desc=f"Block {block_idx}"):
+        # Get sample from dataset
+        sample = dataset[sample_idx]
         
-        # Unpack batch (custom collate returns lists)
-        src_name = batch['src_name'][0]
-        trg_name = batch['trg_name'][0]
-        src_kps_raw = torch.tensor(batch['src_kps'][0], dtype=torch.float32)
-        trg_kps_raw = torch.tensor(batch['trg_kps'][0], dtype=torch.float32)
-        trg_bbox = torch.tensor(batch['trg_bndbox'][0], dtype=torch.float32)
+        # Unpack sample
+        src_name = sample['src_name']
+        trg_name = sample['trg_name']
+        src_kps_raw = torch.tensor(sample['src_kps'], dtype=torch.float32)
+        trg_kps_raw = torch.tensor(sample['trg_kps'], dtype=torch.float32)
+        trg_bbox = torch.tensor(sample['trg_bndbox'], dtype=torch.float32)
 
         
         # Load and preprocess images
-        src_img_path = dataloader.dataset.get_image_path(src_name)
-        trg_img_path = dataloader.dataset.get_image_path(trg_name)
+        src_img_path = dataset.get_image_path(src_name)
+        trg_img_path = dataset.get_image_path(trg_name)
         
         src_tensor = model.preprocess_image(str(src_img_path), target_size=(standard_size, standard_size))
         trg_tensor = model.preprocess_image(str(trg_img_path), target_size=(standard_size, standard_size))
         
-        # Get original image sizes from batch
-        src_orig_size = batch['src_imsize'][0]
-        trg_orig_size = batch['trg_imsize'][0]
+        # Get original image sizes from sample
+        src_orig_size = sample['src_imsize']
+        trg_orig_size = sample['trg_imsize']
         src_w, src_h = int(src_orig_size[0]), int(src_orig_size[1])
         trg_w, trg_h = int(trg_orig_size[0]), int(trg_orig_size[1])
 
@@ -261,16 +336,16 @@ def evaluate_single_block(model, dataloader, block_idx, alpha, standard_size, de
             feat2 = model.forward_from_block_features(trg_block_feat)
             
             # PCA Visualization
-            if visualize and sample_count < 5 and output_dir:
+            if visualize and output_dir:
                 try:
                     pca1, pca2 = compute_pca(feat1, feat2)
                     visualize_pca(
                         str(src_img_path), str(trg_img_path),
                         pca1, pca2,
-                        block_idx, sample_count, output_dir
+                        block_idx, sample_idx, output_dir
                     )
                 except Exception as e:
-                    print(f"Visualization failed for sample {sample_count}: {e}")
+                    print(f"Visualization failed for sample {sample_idx}: {e}")
         
         # Scale source keypoints from original size to standard size
         src_kps = src_kps_raw.clone().float()
@@ -318,8 +393,6 @@ def evaluate_single_block(model, dataloader, block_idx, alpha, standard_size, de
             results['pck_window_samples'].append(pck_window)
             results['errors_global'].append(err_global)
             results['errors_window'].append(err_window)
-        
-        sample_count += 1
     
     # Aggregate results
     results['pck_global_mean'] = np.mean(results['pck_global_samples']) if results['pck_global_samples'] else 0.0
@@ -436,25 +509,18 @@ def main():
     dataset_root = Path(args.data_root).parent if 'SPair-71k' in args.data_root else args.data_root
     dataset = SPair71kPairs(root=dataset_root, split=args.split)
     
-    # Create dataloader (batch_size=1 for simplicity)
-    from torch.utils.data import DataLoader
-    
-    def collate_fn(batch):
-        """Custom collate to add dataset root to batch."""
-        batch_dict = {}
-        for key in batch[0].keys():
-            if key in ['src_img', 'trg_img', 'src_segmentation', 'trg_segmentation']:
-                # Skip image data - we'll load directly
-                continue
-            batch_dict[key] = [item[key] for item in batch]
-        return batch_dict
-    
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate_fn)
-
-    
     print(f"Dataset size: {len(dataset)} pairs")
     if args.num_samples:
         print(f"Limiting evaluation to {args.num_samples} samples")
+    
+    # Parse visualize-samples specification
+    sample_indices = None
+    if args.visualize:
+        sample_indices = parse_visualize_samples(args.visualize_samples, dataset_size=len(dataset))
+        if sample_indices is None:
+            print(f"Visualization enabled for all samples")
+        else:
+            print(f"Visualization enabled for {len(sample_indices)} samples: {sample_indices}")
     
     # Run block-wise evaluation
     print(f"\n{'='*60}")
@@ -466,10 +532,11 @@ def main():
     # Evaluate each block
     for block_idx in block_range:
         result = evaluate_single_block(
-            model, dataloader, block_idx, 
+            model, dataset, block_idx, 
             args.alpha, model.standard_size, device,
             num_samples=args.num_samples,
             visualize=args.visualize,
+            sample_indices=sample_indices,
             output_dir=args.output_dir
         )
             
