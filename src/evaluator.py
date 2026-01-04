@@ -13,11 +13,13 @@ from src.new_loss import predict_keypoints, predict_keypoints_window, denormaliz
 from src.pck import compute_pck_from_batch
 
 class PCKEvaluator:
-    def __init__(self, trainer, device, dataset=None):
+    def __init__(self, trainer, device, dataset=None, window_size=5):
         """
         Args:
             trainer: The Trainer instance (holds .features_cache and .model).
             device: 'cuda' or 'cpu'.
+            dataset: The dataset to evaluate (optional).
+            window_size: Size of the window for local refinement in predict_keypoints_window (default: 5).
         """
         self.trainer = trainer
         self.model = trainer.model # The adapter
@@ -25,6 +27,7 @@ class PCKEvaluator:
         # Use the model's configured standard size (e.g., 518 or 528)
         self.standard_size = getattr(self.model, 'standard_size', 518)
         self.dataset = dataset
+        self.window_size = window_size
 
         # Buffer to store results for visualization
         self.pair_results = []
@@ -50,6 +53,7 @@ class PCKEvaluator:
             pred_w_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
+                window_size=self.window_size,
                 temperature=0.1
             )
 
@@ -174,6 +178,7 @@ class PCKEvaluator:
             pred_window_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
+                window_size=self.window_size,
                 temperature=0.1
             )
             
@@ -464,6 +469,7 @@ class PCKEvaluator:
             pred_window_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
+                window_size=self.window_size,
                 temperature=0.1
             )
 

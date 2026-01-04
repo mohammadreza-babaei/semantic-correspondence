@@ -98,6 +98,8 @@ def main():
                              help="Dataset split to evaluate on")
     eval_parser.add_argument("--plot-pair", type=int, default=None,
                              help="Print image bbased on index")
+    eval_parser.add_argument("--window-size", type=int, default=5,
+                             help="Window size for local refinement in window-based prediction (default: 5)")
     
     args = parser.parse_args()
 
@@ -348,10 +350,10 @@ def evaluate(args):
 
     
     # 7. Run Evaluation
-    evaluator = PCKEvaluator(trainer=trainer, device=device)
+    evaluator = PCKEvaluator(trainer=trainer, device=device, window_size=args.window_size)
 
     if args.plot_pair is not None:
-        test_single_sample(trainer, device, eval_dataset, args.plot_pair)
+        test_single_sample(trainer, device, eval_dataset, args.plot_pair, window_size=args.window_size)
         return
     
     results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha{args.alpha}.csv"
@@ -364,7 +366,7 @@ def evaluate(args):
     
 
 
-def test_single_sample(trainer, device, dataset, sample_id):
+def test_single_sample(trainer, device, dataset, sample_id, window_size=5):
     """
     Evaluates a specific sample ID using the PCKEvaluator and displays the result inline.
 
@@ -373,10 +375,11 @@ def test_single_sample(trainer, device, dataset, sample_id):
         device: 'cuda' or 'cpu'.
         sample_id (int): The index of the pair to test.
         output_dir (str): Folder to save temporary visualization.
+        window_size (int): Window size for local refinement.
     """
     # 1. Instantiate the Evaluator
     # Ensure this matches your import (e.g., from evaluator import PCKEvaluator)
-    evaluator = PCKEvaluator(trainer, device, dataset=dataset)
+    evaluator = PCKEvaluator(trainer, device, dataset=dataset, window_size=window_size)
 
     output_dir = "evaluations/pictures"
     evaluator.evaluate_pair_by_index(sample_id, output_dir=output_dir)
