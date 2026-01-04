@@ -47,7 +47,10 @@ def apply_lora(model, model_type, rank=8, alpha=16, num_unfrozen_blocks=2):
         target_suffixes = ["attn.qkv", "attn.proj", "mlp.fc1", "mlp.fc2"]
         
     elif 'sam' in model_type.lower():
-        target_suffixes = ["attn.qkv", "attn.proj", "mlp.lin1", "mlp.lin2", "neck.0", "neck.1", "neck.2", "neck.3"]
+        target_suffixes = ["attn.qkv", "attn.proj", "mlp.lin1", "mlp.lin2"]
+        if getattr(model, 'unfreeze_neck', False):
+            print("Including neck modules for LoRA adaptation.")
+            target_suffixes.extend(["neck.0", "neck.1", "neck.2", "neck.3"])
         
     else:
         raise ValueError(f"Unknown model_type for LoRA: {model_type}")

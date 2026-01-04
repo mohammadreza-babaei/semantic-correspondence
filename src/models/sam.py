@@ -47,6 +47,7 @@ class SAMAdapter:
         self.patch_size = 16  # SAM uses a patch size of 16 for its encoder
         self.standard_size = STANDARD_SIZE
         self.model_name = model_name
+        self.unfreeze_neck = unfreeze_neck
         
         # Setup dropout layer
         self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
