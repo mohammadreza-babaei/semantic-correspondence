@@ -63,15 +63,15 @@ class SPair71kPairs(Dataset):
         self.split_dir = split_map[split]
         
         # Load all pair annotations
-        self.pairs = []
+        self.pairs = {}
         pair_dir = self.root / 'PairAnnotation' / self.split_dir
         if not pair_dir.exists():
             raise FileNotFoundError(f"Pair annotation directory not found: {pair_dir}")
-            
+        
         for pair_file in sorted(pair_dir.glob('*.json')):
             with open(pair_file, 'r') as f:
                 data = json.load(f)
-                self.pairs.append(data)
+                self.pairs[data['pair_id']] = data
     
     def get_image_path(self, img_name: str) -> Path:
         """Get the absolute path to an image by its name."""
@@ -94,7 +94,7 @@ class SPair71kPairs(Dataset):
         return SPair71kImages(str(self.root.parent), transform=transform)
 
     def __len__(self) -> int:
-        return len(self.pairs)
+        return len(self.pairs.keys())
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         data = self.pairs[idx]

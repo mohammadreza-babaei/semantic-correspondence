@@ -4,6 +4,7 @@ import os
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from pathlib import Path
 from tqdm import tqdm
 import pandas as pd
@@ -236,6 +237,11 @@ class PCKEvaluator:
                 pck_score = pair_correct_count / pair_visible_count
                 avg_error = pair_total_error / pair_visible_count
                 
+                # Get source bbox
+                curr_src_bbox = batch['src_bndbox'][i] if B > 1 else batch['src_bndbox']
+                if not isinstance(curr_src_bbox, torch.Tensor):
+                    curr_src_bbox = torch.tensor(curr_src_bbox)
+                
                 self.pair_results.append({
                     'src_path': s_name,
                     'trg_path': t_name,
@@ -243,7 +249,9 @@ class PCKEvaluator:
                     'trg_kps': curr_trg_kps.numpy(),
                     'pred_kps': pred_window_orig.numpy(), # Using Window prediction for vis
                     'pck': pck_score,
-                    'error': avg_error
+                    'error': avg_error,
+                    'src_bbox': curr_src_bbox.numpy(),
+                    'trg_bbox': curr_bbox.numpy()
                 })
 
     def process_results(csv_path, save_dir):
@@ -364,6 +372,7 @@ class PCKEvaluator:
         """
         Helper to draw Source (Query) and Target (Prediction vs GT).
         """
+        
         # Load Images
         src_img_path = str(self.dataset.get_image_path(res['src_path']))
         trg_img_path = str(self.dataset.get_image_path(res['trg_path']))
@@ -385,17 +394,36 @@ class PCKEvaluator:
         ax[0].set_title("Source (Query Keypoints)")
         ax[0].axis('off')
         
+        # Draw source bounding box if available
+        if 'src_bbox' in res:
+            src_bbox = res['src_bbox']
+            rect = Rectangle((src_bbox[0], src_bbox[1]), 
+                            src_bbox[2] - src_bbox[0], 
+                            src_bbox[3] - src_bbox[1],
+                            linewidth=2, edgecolor='cyan', facecolor='none', label='BBox')
+            ax[0].add_patch(rect)
+        
         # Plot source points (Yellow)
         # Filter invisible source points (often 0,0)
         src_kps = res['src_kps']
         valid_src = (src_kps[:, 0] > 0) & (src_kps[:, 1] > 0)
         ax[0].scatter(src_kps[valid_src, 0], src_kps[valid_src, 1], 
                       c='yellow', s=50, marker='o', edgecolors='black', label='Query')
+        ax[0].legend(loc='lower right', fontsize='small')
 
         # 2. Target Image + Pred vs GT
         ax[1].imshow(trg_img)
         ax[1].set_title(f"Target (PCK: {res['pck']:.2f}, Err: {res['error']:.1f}px)")
         ax[1].axis('off')
+        
+        # Draw target bounding box if available
+        if 'trg_bbox' in res:
+            trg_bbox = res['trg_bbox']
+            rect = Rectangle((trg_bbox[0], trg_bbox[1]), 
+                            trg_bbox[2] - trg_bbox[0], 
+                            trg_bbox[3] - trg_bbox[1],
+                            linewidth=2, edgecolor='cyan', facecolor='none', label='BBox')
+            ax[1].add_patch(rect)
 
         # Plot Ground Truth (Green)
         gt = res['trg_kps']
@@ -503,6 +531,8 @@ class PCKEvaluator:
         print("-" * 40)
 
         # 6. Visualize Comparison
+        src_bbox = torch.tensor(sample['src_bndbox'], dtype=torch.float32)
+        
         res = {
             'src_path': s_name,
             'trg_path': t_name,
@@ -511,7 +541,9 @@ class PCKEvaluator:
             'pred_global': pred_g_orig.numpy(),
             'pred_window': pred_w_orig.numpy(),
             'pck_g': pck_g, 'err_g': err_g,
-            'pck_w': pck_w, 'err_w': err_w
+            'pck_w': pck_w, 'err_w': err_w,
+            'src_bbox': src_bbox.numpy(),
+            'trg_bbox': trg_bbox.numpy()
         }
         
         os.makedirs(output_dir, exist_ok=True)
@@ -523,7 +555,6 @@ class PCKEvaluator:
         """
         Generates a 3-column plot: [Source] | [Global Pred] | [Window Pred]
         """
-
         
         src_img_path = str(self.dataset.get_image_path(res["src_path"]))
         trg_img_path = str(self.dataset.get_image_path(res["trg_path"]))
@@ -544,6 +575,16 @@ class PCKEvaluator:
         ax[0].imshow(src_img)
         ax[0].set_title("Source (Query)")
         ax[0].axis('off')
+        
+        # Draw source bounding box if available
+        if 'src_bbox' in res:
+            src_bbox = res['src_bbox']
+            rect = Rectangle((src_bbox[0], src_bbox[1]), 
+                            src_bbox[2] - src_bbox[0], 
+                            src_bbox[3] - src_bbox[1],
+                            linewidth=2, edgecolor='cyan', facecolor='none')
+            ax[0].add_patch(rect)
+        
         src_kps = res['src_kps']
         valid_src = (src_kps[:, 0] > 0) & (src_kps[:, 1] > 0)
         ax[0].scatter(src_kps[valid_src, 0], src_kps[valid_src, 1], c='yellow', s=50, edgecolors='black')
@@ -553,6 +594,15 @@ class PCKEvaluator:
             ax[ax_idx].imshow(trg_img)
             ax[ax_idx].set_title(f"{title}\nPCK: {pck:.2f}, Err: {err:.1f}px")
             ax[ax_idx].axis('off')
+            
+            # Draw target bounding box if available
+            if 'trg_bbox' in res:
+                trg_bbox = res['trg_bbox']
+                rect = Rectangle((trg_bbox[0], trg_bbox[1]), 
+                                trg_bbox[2] - trg_bbox[0], 
+                                trg_bbox[3] - trg_bbox[1],
+                                linewidth=2, edgecolor='cyan', facecolor='none')
+                ax[ax_idx].add_patch(rect)
             
             gt = res['trg_kps']
             valid_gt = (gt[:, 0] > 0) & (gt[:, 1] > 0)
