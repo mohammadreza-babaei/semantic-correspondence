@@ -16,8 +16,8 @@ sam = SAMAdapter(model_name='vit_b', weights_path='/home/lollo/Downloads/sam_vit
 sam_finetuned_augmented = SAMAdapter(model_name='vit_b', weights_path='/home/lollo/Documents/finetuned_sam_BEST/finetuned_sam_vit_b.pt', device=device)
 
 # Define image paths (you can pick any pair of images)
-src_img = 'data/SPair-71k/JPEGImages/cat/2010_004954.jpg'
-trg_img = 'data/SPair-71k/JPEGImages/cat/2008_006999.jpg'
+src_img = 'data/SPair-71k/JPEGImages/motorbike/2008_001168.jpg'
+trg_img = 'data/SPair-71k/JPEGImages/motorbike/2010_004066.jpg'
 
 # Compare final feature outputs from each model
 compare_models_pca(
