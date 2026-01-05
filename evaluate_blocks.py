@@ -57,86 +57,12 @@ from tqdm import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from src.plotting import plot_block_weights
-from sklearn.decomposition import PCA
+from src.plotting import plot_block_weights, compute_pca, plot_pca_features
 
 from src.models import SAMAdapter, DINOv2Adapter, DINOv3Adapter
 from src.spair_dataset import SPair71kPairs
 from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
 from src.pck import compute_pck_from_batch
-
-def compute_pca(feat1, feat2):
-    """
-    Compute PCA for a pair of feature maps to visualize them in RGB.
-    Uses the same PCA basis for both images to ensure comparable colors.
-    
-    Args:
-        feat1, feat2: Feature tensors of shape (1, C, H, W)
-        
-    Returns:
-        pca1, pca2: Numpy arrays (H, W, 3) with values in [0, 1]
-    """
-    # Remove batch dim and convert to numpy
-    f1 = feat1.squeeze(0).cpu().numpy()  # (C, H, W)
-    f2 = feat2.squeeze(0).cpu().numpy()  # (C, H, W)
-    
-    C, H1, W1 = f1.shape
-    _, H2, W2 = f2.shape
-    
-    # Flatten spatial dims and transpose to (N, C)
-    f1_flat = f1.reshape(C, -1).T  # (H1*W1, C)
-    f2_flat = f2.reshape(C, -1).T  # (H2*W2, C)
-    
-    # Concatenate to find common PCA basis
-    X = np.concatenate([f1_flat, f2_flat], axis=0)  # (N, C)
-    
-    # Apply PCA to reduce to 3 components (for RGB visualization)
-    pca = PCA(n_components=3)
-    projected = pca.fit_transform(X)  # (N, 3)
-    
-    # Normalize to [0, 1] for RGB visualization
-    p_min = projected.min(axis=0, keepdims=True)
-    p_max = projected.max(axis=0, keepdims=True)
-    projected = (projected - p_min) / (p_max - p_min + 1e-6)
-    
-    # Split back into two images
-    pca1 = projected[:H1*W1, :].reshape(H1, W1, 3)
-    pca2 = projected[H1*W1:, :].reshape(H2, W2, 3)
-    
-    return pca1, pca2
-
-
-def visualize_pca(src_img_path, trg_img_path, src_pca, trg_pca, block_idx, sample_idx, output_dir):
-    """Save items visualization."""
-    save_dir = os.path.join(output_dir, f'debug_block_{block_idx}')
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Load images
-    src_img = plt.imread(src_img_path)
-    trg_img = plt.imread(trg_img_path)
-    
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
-    axes = axes.flatten()
-    
-    axes[0].imshow(src_img)
-    axes[0].set_title("Source Image")
-    axes[0].axis('off')
-    
-    axes[1].imshow(src_pca, interpolation='nearest') # nearest to see grid, or bilinear for smooth
-    axes[1].set_title(f"Source Features (Block {block_idx})")
-    axes[1].axis('off')
-    
-    axes[2].imshow(trg_img)
-    axes[2].set_title("Target Image")
-    axes[2].axis('off')
-    
-    axes[3].imshow(trg_pca, interpolation='nearest')
-    axes[3].set_title(f"Target Features (Block {block_idx})")
-    axes[3].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f'sample_{sample_idx}_pca.png'), bbox_inches='tight')
-    plt.close()
 
 
 def parse_visualize_samples(spec_str, dataset_size=None):
@@ -339,10 +265,11 @@ def evaluate_single_block(model, dataset, block_idx, alpha, standard_size, devic
             if visualize and output_dir:
                 try:
                     pca1, pca2 = compute_pca(feat1, feat2)
-                    visualize_pca(
+                    plot_pca_features(
                         str(src_img_path), str(trg_img_path),
                         pca1, pca2,
-                        block_idx, sample_idx, output_dir
+                        title_suffix=f"(Block {block_idx})",
+                        save_path=os.path.join(output_dir, f'debug_block_{block_idx}', f'sample_{sample_idx}_pca.png')
                     )
                 except Exception as e:
                     print(f"Visualization failed for sample {sample_idx}: {e}")

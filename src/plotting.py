@@ -1,5 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+from sklearn.decomposition import PCA
+import os
 
 def plot_training_history(history, save_path=None):
     """
@@ -163,5 +166,173 @@ def plot_block_weights(block, block_idx, save_path):
         plt.savefig(save_path, dpi=150)
         
     plt.close(fig)
+
+
+def compute_pca(feat1, feat2):
+    """
+    Compute PCA for a pair of feature maps to visualize them in RGB.
+    Uses the same PCA basis for both images to ensure comparable colors.
+    
+    Args:
+        feat1, feat2: Feature tensors of shape (1, C, H, W)
+        
+    Returns:
+        pca1, pca2: Numpy arrays (H, W, 3) with values in [0, 1]
+    """
+    # Remove batch dim and convert to numpy
+    f1 = feat1.squeeze(0).cpu().numpy()  # (C, H, W)
+    f2 = feat2.squeeze(0).cpu().numpy()  # (C, H, W)
+    
+    C, H1, W1 = f1.shape
+    _, H2, W2 = f2.shape
+    
+    # Flatten spatial dims and transpose to (N, C)
+    f1_flat = f1.reshape(C, -1).T  # (H1*W1, C)
+    f2_flat = f2.reshape(C, -1).T  # (H2*W2, C)
+    
+    # Concatenate to find common PCA basis
+    X = np.concatenate([f1_flat, f2_flat], axis=0)  # (N, C)
+    
+    # Apply PCA to reduce to 3 components (for RGB visualization)
+    pca = PCA(n_components=3)
+    projected = pca.fit_transform(X)  # (N, 3)
+    
+    # Normalize to [0, 1] for RGB visualization
+    p_min = projected.min(axis=0, keepdims=True)
+    p_max = projected.max(axis=0, keepdims=True)
+    projected = (projected - p_min) / (p_max - p_min + 1e-6)
+    
+    # Split back into two images
+    pca1 = projected[:H1*W1, :].reshape(H1, W1, 3)
+    pca2 = projected[H1*W1:, :].reshape(H2, W2, 3)
+    
+    return pca1, pca2
+
+
+def plot_pca_features(src_img_path, trg_img_path, src_pca, trg_pca, title_suffix="", save_path=None):
+    """
+    Plot source and target images alongside their PCA feature visualizations.
+    
+    Args:
+        src_img_path: Path to source image file
+        trg_img_path: Path to target image file
+        src_pca: Source PCA features (H, W, 3)
+        trg_pca: Target PCA features (H, W, 3)
+        title_suffix: Optional suffix for titles
+        save_path: Path to save the plot
+    """
+    # Load images
+    src_img = plt.imread(src_img_path)
+    trg_img = plt.imread(trg_img_path)
+    
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+    axes = axes.flatten()
+    
+    axes[0].imshow(src_img)
+    axes[0].set_title("Source Image")
+    axes[0].axis('off')
+    
+    axes[1].imshow(src_pca, interpolation='nearest') # nearest to see grid, or bilinear for smooth
+    axes[1].set_title(f"Source Features {title_suffix}")
+    axes[1].axis('off')
+    
+    axes[2].imshow(trg_img)
+    axes[2].set_title("Target Image")
+    axes[2].axis('off')
+    
+    axes[3].imshow(trg_pca, interpolation='nearest')
+    axes[3].set_title(f"Target Features {title_suffix}")
+    axes[3].axis('off')
+    
+    plt.tight_layout()
+    if save_path:
+        if os.path.dirname(save_path):
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.show()
+
+
+def compare_models_pca(models, src_img_path, trg_img_path, block_idx, save_path=None, model_names=None):
+    """
+    Compare PCA features of multiple models for a single image pair.
+    
+    Args:
+        models: List of model adapter instances.
+        src_img_path: Path to source image.
+        trg_img_path: Path to target image.
+        block_idx: Block index to extract features from.
+        save_path: Path to save result image.
+        model_names: Optional list of names/titles for each model.
+    """
+    n_models = len(models)
+
+    if model_names and len(model_names) != n_models:
+        print(f"Warning: Number of model names ({len(model_names)}) does not match number of models ({n_models}). Ignoring custom names.")
+        model_names = None
+    
+    # Load images for display
+    src_img = plt.imread(src_img_path)
+    trg_img = plt.imread(trg_img_path)
+    
+    # Setup plot: 2 rows (Original, Models...) x (N+1) columns
+    # Row 0: Source Image, Model 0 Src, Model 1 Src...
+    # Row 1: Target Image, Model 0 Trg, Model 1 Trg...
+    
+    fig, axes = plt.subplots(2, n_models + 1, figsize=(4 * (n_models + 1), 8))
+    
+    # Handle single model case where axes might be 1D or 0D? No multiple cols/rows usually returns 2D array unless squeezed.
+    # But n_models >= 1, so cols >= 2. rows=2. So always 2D array.
+    if n_models == 0:
+        return
+
+    # Plot original images in first column
+    axes[0, 0].imshow(src_img)
+    axes[0, 0].set_title("Source Image")
+    axes[0, 0].axis('off')
+    
+    axes[1, 0].imshow(trg_img)
+    axes[1, 0].set_title("Target Image")
+    axes[1, 0].axis('off')
+    
+    for i, model in enumerate(models):
+        col = i + 1
+        if model_names:
+            model_name = model_names[i]
+        else:
+            model_name = getattr(model, 'model_name', f'Model {i}')
+        
+        # Preprocess and extract features
+        standard_size = model.standard_size
+        src_tensor = model.preprocess_image(str(src_img_path), target_size=(standard_size, standard_size))
+        trg_tensor = model.preprocess_image(str(trg_img_path), target_size=(standard_size, standard_size))
+        
+        with torch.no_grad():
+             src_block_feat = model.extract_features_from_block(src_tensor, block_idx)
+             trg_block_feat = model.extract_features_from_block(trg_tensor, block_idx)
+             
+             feat1 = model.forward_from_block_features(src_block_feat)
+             feat2 = model.forward_from_block_features(trg_block_feat)
+             
+             pca1, pca2 = compute_pca(feat1, feat2)
+        
+        axes[0, col].imshow(pca1, interpolation='nearest')
+        axes[0, col].set_title(f"{model_name}\n(Source)")
+        axes[0, col].axis('off')
+        
+        axes[1, col].imshow(pca2, interpolation='nearest')
+        axes[1, col].set_title(f"{model_name}\n(Target)")
+        axes[1, col].axis('off')
+        
+    plt.tight_layout()
+    if save_path:
+        if os.path.dirname(save_path):
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=150)
+        plt.close()
+    else:
+        plt.show()
+
 
     
