@@ -254,15 +254,14 @@ def plot_pca_features(src_img_path, trg_img_path, src_pca, trg_pca, title_suffix
         plt.show()
 
 
-def compare_models_pca(models, src_img_path, trg_img_path, block_idx, save_path=None, model_names=None):
+def compare_models_pca(models, src_img_path, trg_img_path, save_path=None, model_names=None):
     """
-    Compare PCA features of multiple models for a single image pair.
+    Compare PCA features of multiple models for a single image pair using final feature outputs.
     
     Args:
         models: List of model adapter instances.
         src_img_path: Path to source image.
         trg_img_path: Path to target image.
-        block_idx: Block index to extract features from.
         save_path: Path to save result image.
         model_names: Optional list of names/titles for each model.
     """
@@ -303,17 +302,19 @@ def compare_models_pca(models, src_img_path, trg_img_path, block_idx, save_path=
         else:
             model_name = getattr(model, 'model_name', f'Model {i}')
         
-        # Preprocess and extract features
+        # Preprocess and extract final features
         standard_size = model.standard_size
         src_tensor = model.preprocess_image(str(src_img_path), target_size=(standard_size, standard_size))
         trg_tensor = model.preprocess_image(str(trg_img_path), target_size=(standard_size, standard_size))
         
         with torch.no_grad():
-             src_block_feat = model.extract_features_from_block(src_tensor, block_idx)
-             trg_block_feat = model.extract_features_from_block(trg_tensor, block_idx)
+             # Extract intermediate features (output of frozen blocks)
+             src_intermediate = model.extract_intermediate_features(src_tensor)
+             trg_intermediate = model.extract_intermediate_features(trg_tensor)
              
-             feat1 = model.forward_from_block_features(src_block_feat)
-             feat2 = model.forward_from_block_features(trg_block_feat)
+             # Forward through unfrozen blocks to get final features
+             feat1 = model.forward_unfrozen_blocks(src_intermediate)
+             feat2 = model.forward_unfrozen_blocks(trg_intermediate)
              
              pca1, pca2 = compute_pca(feat1, feat2)
         
