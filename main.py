@@ -77,6 +77,8 @@ def main():
                                   help="Path to checkpoint to resume training from (e.g. checkpoints/best_model.pt)")
     fine_tune_parser.add_argument("--no-save-checkpoints", action="store_true",
                                   help="Disable saving checkpoints during training")
+    fine_tune_parser.add_argument("--temperature", type=float, default=1.0,
+                                  help="Temperature for softmax during inference (default: 1.0)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
 
@@ -99,6 +101,8 @@ def main():
                              help="Print image bbased on index")
     eval_parser.add_argument("--window-size", type=int, default=5,
                              help="Window size for local refinement in window-based prediction (default: 5)")
+    eval_parser.add_argument("--temperature", type=float, default=1.0,
+                             help="Temperature for softmax during inference (default: 1.0)")
     
     args = parser.parse_args()
 
@@ -214,6 +218,7 @@ def fine_tune(args, model_type):
         fixed_lr=args.fixed_lr,
         weight_decay=args.weight_decay,
         feature_reg=args.feature_reg,
+        temperature=args.temperature,
     )
     
     # Resume training if requested
@@ -335,7 +340,8 @@ def evaluate(args):
     trainer = Trainer(
         model=adapter,
         device=device,
-        num_unfrozen_blocks=args.num_unfrozen_blocks
+        num_unfrozen_blocks=args.num_unfrozen_blocks,
+        temperature=args.temperature
     )
 
     # 5. Extract Features
@@ -353,7 +359,7 @@ def evaluate(args):
 
     
     # 7. Run Evaluation
-    evaluator = PCKEvaluator(trainer=trainer, device=device, window_size=args.window_size)
+    evaluator = PCKEvaluator(trainer=trainer, device=device, window_size=args.window_size, temperature=args.temperature)
 
     if args.plot_pair is not None:
         test_single_sample(trainer, device, eval_dataset, args.plot_pair, window_size=args.window_size)

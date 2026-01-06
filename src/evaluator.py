@@ -13,13 +13,14 @@ from src.new_loss import predict_keypoints, predict_keypoints_window, denormaliz
 from src.pck import compute_pck, get_bbox_size
 
 class PCKEvaluator:
-    def __init__(self, trainer, device, dataset=None, window_size=5):
+    def __init__(self, trainer, device, dataset=None, window_size=5, temperature=0.02):
         """
         Args:
             trainer: The Trainer instance (holds .features_cache and .model).
             device: 'cuda' or 'cpu'.
             dataset: The dataset to evaluate (optional).
             window_size: Size of the window for local refinement in predict_keypoints_window (default: 5).
+            temperature: Temperature for softmax during inference (default: 0.02).
         """
         self.trainer = trainer
         self.model = trainer.model # The adapter
@@ -28,6 +29,7 @@ class PCKEvaluator:
         self.standard_size = getattr(self.model, 'standard_size', 518)
         self.dataset = dataset
         self.window_size = window_size
+        self.temperature = temperature
 
         # Buffer to store results for visualization
         self.pair_results = []
@@ -47,14 +49,14 @@ class PCKEvaluator:
             pred_g_norm = predict_keypoints(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
-                temperature=0.02
+                temperature=self.temperature
             )
             # 2. Window Prediction
             pred_w_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
                 window_size=self.window_size,
-                temperature=0.02
+                temperature=self.temperature
             )
 
         # Accumulators
@@ -170,13 +172,13 @@ class PCKEvaluator:
             pred_global_norm = predict_keypoints(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
-                temperature=0.02
+                temperature=self.temperature
             )
             pred_window_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
                 window_size=self.window_size,
-                temperature=0.02
+                temperature=self.temperature
             )
             
             # Denormalize predictions using shared helper

@@ -37,11 +37,12 @@ class Trainer():
         self.fixed_lr = kwargs.get('fixed_lr', False)
         self.weight_decay = kwargs.get('weight_decay', 0.01)
         self.feature_reg = kwargs.get('feature_reg', 0.0)
+        self.temperature = kwargs.get('temperature', 0.02)
         self.scheduler = None
         self.cached_dataset = None  # Set in train()
 
         # Initialize Evaluator for validation consistency
-        self.evaluator = PCKEvaluator(self.model, self.device)
+        self.evaluator = PCKEvaluator(self.model, self.device, temperature=self.temperature)
         self.best_val_loss = float('inf')
         self.start_epoch = 0
 
@@ -230,7 +231,7 @@ class Trainer():
             src_kps_batch, trg_kps_batch, 
             src_img_size=(self.model.standard_size, self.model.standard_size),
             trg_img_size=(self.model.standard_size, self.model.standard_size),
-            temperature=0.1
+            temperature=self.temperature
         )
         
         # Add L2 feature regularization if enabled
@@ -273,7 +274,7 @@ class Trainer():
                     src_kps_vis.unsqueeze(0), trg_kps_vis.unsqueeze(0), 
                     src_img_size=(self.model.standard_size, self.model.standard_size),
                     trg_img_size=(self.model.standard_size, self.model.standard_size),
-                    temperature=0.1
+                    temperature=self.temperature
                 )
                 loss_val = loss.item()
             else:

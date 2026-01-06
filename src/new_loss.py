@@ -18,7 +18,7 @@ def denormalize_predictions(pred_norm, trg_orig_size):
     return pred
 
 def predict_keypoints(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=None, 
-                      temperature=0.1):
+                      temperature=0.02):
     """
     Helper to predict keypoints (Soft-Argmax) without calculating loss.
     
@@ -83,7 +83,7 @@ def predict_keypoints(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=
     return torch.stack([pred_x, pred_y], dim=-1)
 
 def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_img_size=None, 
-                             window_size=5, temperature=0.1):
+                             window_size=5, temperature=0.02):
     if trg_img_size is None:
         trg_img_size = src_img_size
     
@@ -173,7 +173,7 @@ def predict_keypoints_window(src_feats, trg_feats, src_kps, src_img_size, trg_im
     return pred_norm
 
 def loss(src_feats, trg_feats, src_kps, trg_kps, src_img_size, trg_img_size=None, 
-         temperature=0.1):
+         temperature=0.02):
     """
     Computes the keypoint correspondence loss.
     
