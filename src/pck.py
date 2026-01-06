@@ -23,7 +23,7 @@ def get_bbox_size(bbox):
     else:
         return np.maximum(width, height)
 
-def calculate_pck(pred_kps, gt_kps, bbox, alpha=0.1, mask=None, size_type='bbox'):
+def compute_pck(pred_kps, gt_kps, bbox, alpha=0.1, mask=None, size_type='bbox'):
     """
     Calculates Percentage of Correct Keypoints (PCK).
     
@@ -117,7 +117,7 @@ def compute_pck_from_batch(batch, pred_kps, alpha=0.1):
     # Adjust based on specific dataset preprocessing.
     mask = (gt_kps[..., 0] > 0) & (gt_kps[..., 1] > 0)
     
-    return calculate_pck(pred_kps, gt_kps, bbox, alpha, mask)
+    return compute_pck(pred_kps, gt_kps, bbox, alpha, mask)
 
 
 def compute_raw_distances(pred_kps, gt_kps, bbox):

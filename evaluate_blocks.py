@@ -62,7 +62,7 @@ from src.plotting import plot_block_weights, compute_pca, plot_pca_features
 from src.models import SAMAdapter, DINOv2Adapter, DINOv3Adapter
 from src.spair_dataset import SPair71kPairs
 from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
-from src.pck import compute_pck_from_batch
+from src.pck import compute_pck
 
 
 def parse_visualize_samples(spec_str, dataset_size=None):
@@ -299,20 +299,20 @@ def evaluate_single_block(model, dataset, block_idx, alpha, standard_size, devic
         pred_window_orig = denormalize_predictions(pred_window_norm, (trg_w, trg_h)).squeeze(0).cpu()
 
         
-        # Compute PCK
+        # Compute PCK using compute_pck
         trg_kps = trg_kps_raw.float()
-        dist_global = torch.norm(pred_global_orig - trg_kps, dim=-1)
-        dist_window = torch.norm(pred_window_orig - trg_kps, dim=-1)
-        
-        bbox_size = max(trg_bbox[2] - trg_bbox[0], trg_bbox[3] - trg_bbox[1]).item()
-        threshold = alpha * bbox_size
-        
-        # Filter visible keypoints
         valid_mask = (trg_kps[:, 0] > 0) & (trg_kps[:, 1] > 0)
         
+        pck_global, _ = compute_pck(
+            pred_global_orig, trg_kps, trg_bbox, alpha, valid_mask
+        )
+        pck_window, _ = compute_pck(
+            pred_window_orig, trg_kps, trg_bbox, alpha, valid_mask
+        )
+        
         if valid_mask.sum() > 0:
-            pck_global = (dist_global[valid_mask] <= threshold).float().mean().item()
-            pck_window = (dist_window[valid_mask] <= threshold).float().mean().item()
+            dist_global = torch.norm(pred_global_orig - trg_kps, dim=-1)
+            dist_window = torch.norm(pred_window_orig - trg_kps, dim=-1)
             err_global = dist_global[valid_mask].mean().item()
             err_window = dist_window[valid_mask].mean().item()
             

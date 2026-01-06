@@ -11,7 +11,7 @@ import pandas as pd
 
 # Import the helpers
 from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
-from src.pck import compute_pck_from_batch
+from src.pck import compute_pck
 
 class PCKEvaluator:
     def __init__(self, trainer, device, dataset=None, window_size=5):
@@ -507,17 +507,19 @@ class PCKEvaluator:
         
         # 6. Compute Metrics for Both
         def calc_score(pred_kps):
+            # Compute visibility mask
+            mask = (trg_kps_raw[:, 0] > 0) & (trg_kps_raw[:, 1] > 0)
+            pck, _ = compute_pck(pred_kps, trg_kps_raw, trg_bbox, alpha, mask)
+            
+            # Compute error for visible keypoints
             dist = torch.norm(pred_kps - trg_kps_raw, dim=-1)
-            bbox_size = max(trg_bbox[2]-trg_bbox[0], trg_bbox[3]-trg_bbox[1]).item()
-            threshold = alpha * bbox_size
             valid_mask = (trg_kps_raw[:, 0] > 0) & (trg_kps_raw[:, 1] > 0)
             valid_dist = dist[valid_mask]
             
             if len(valid_dist) > 0:
-                pck = (valid_dist <= threshold).float().mean().item()
                 err = valid_dist.mean().item()
             else:
-                pck, err = 0.0, 0.0
+                err = 0.0
             return pck, err
 
         pck_g, err_g = calc_score(pred_g_orig)
