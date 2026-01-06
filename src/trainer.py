@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from PIL import Image
 import matplotlib.pyplot as plt
-import numpy as np
 from pathlib import Path
 import os
 import csv
@@ -493,14 +492,14 @@ class Trainer():
                     })
                 
                 if (batch_idx + 1) % log_interval == 0:
-                    avg_loss = np.mean(epoch_losses[-log_interval:])
+                    avg_loss = torch.tensor(epoch_losses[-log_interval:], dtype=torch.float32).mean().item()
                     print(f"Epoch [{epoch+1}/{epochs}] "
                             f"Batch [{batch_idx+1}/{max_iters}] "
                             f"Loss: {avg_loss:.4f} "
                             f"LR: {self.optimizer.param_groups[0]['lr']:.2e}")
             
             # Calculate epoch average
-            train_loss = np.mean(epoch_losses)
+            train_loss = torch.tensor(epoch_losses, dtype=torch.float32).mean().item()
             self.history['train_loss'].append(train_loss)
             
             if use_wandb:
@@ -531,9 +530,9 @@ class Trainer():
                     val_pcks_g.append(v_pck_g)
                     val_pcks_w.append(v_pck_w)
 
-                val_loss = np.mean(val_losses)
-                val_pck_g = np.mean(val_pcks_g)
-                val_pck_w = np.mean(val_pcks_w)
+                val_loss = torch.tensor(val_losses, dtype=torch.float32).mean().item() if val_losses else 0.0
+                val_pck_g = torch.tensor(val_pcks_g, dtype=torch.float32).mean().item() if val_pcks_g else 0.0
+                val_pck_w = torch.tensor(val_pcks_w, dtype=torch.float32).mean().item() if val_pcks_w else 0.0
 
                 self.history['val_loss'].append(val_loss)
                 self.history['val_pck_global'].append(val_pck_g)

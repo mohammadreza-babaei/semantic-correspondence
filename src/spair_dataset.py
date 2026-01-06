@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-import numpy as np
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
@@ -141,25 +140,26 @@ class SPair71kPairs(Dataset):
             src_seg = self.transform(src_seg)
             trg_seg = self.transform(trg_seg)
         
-        # Convert keypoints to numpy arrays
-        src_kps = np.array(data['src_kps'], dtype=np.float32)
-        trg_kps = np.array(data['trg_kps'], dtype=np.float32)
-        kps_ids = np.array(data['kps_ids'], dtype=np.int32)
+        # Convert keypoints and boxes to torch tensors (ensure types)
+        src_kps = torch.tensor(data['src_kps'], dtype=torch.float32)
+        trg_kps = torch.tensor(data['trg_kps'], dtype=torch.float32)
+        # Keep keypoint ids as-is (can be strings); downstream code treats them as labels
+        kps_ids = list(data['kps_ids'])
         
         return {
             'pair_id': data['pair_id'],
             'src_img': src_img,
             'src_segmentation': src_seg,
             'src_name': src_name,
-            'src_imsize': np.array(data['src_imsize'], dtype=np.int32),
-            'src_bndbox': np.array(data['src_bndbox'], dtype=np.int32),
+            'src_imsize': torch.tensor(data['src_imsize'], dtype=torch.int64),
+            'src_bndbox': torch.tensor(data['src_bndbox'], dtype=torch.int64),
             'src_pose': data['src_pose'],
             'src_kps': src_kps,
             'trg_img': trg_img,
             'trg_segmentation': trg_seg,
             'trg_name': trg_name,
-            'trg_imsize': np.array(data['trg_imsize'], dtype=np.int32),
-            'trg_bndbox': np.array(data['trg_bndbox'], dtype=np.int32),
+            'trg_imsize': torch.tensor(data['trg_imsize'], dtype=torch.int64),
+            'trg_bndbox': torch.tensor(data['trg_bndbox'], dtype=torch.int64),
             'trg_pose': data['trg_pose'],
             'trg_kps': trg_kps,
             'kps_ids': kps_ids,
@@ -261,7 +261,7 @@ class SPair71kImages(Dataset):
                 kps.append(kp)
             else:
                 kps.append([-1, -1])
-        kps = np.array(kps, dtype=np.float32)
+        kps = torch.tensor(kps, dtype=torch.float32)
         
         return {
             'img': img,
@@ -280,7 +280,7 @@ class SPair71kImages(Dataset):
             'truncated': annotation['truncated'],
             'occluded': annotation['occluded'],
             'difficult': annotation['difficult'],
-            'bndbox': np.array(annotation['bndbox'], dtype=np.int32),
+            'bndbox': torch.tensor(annotation['bndbox'], dtype=torch.int64),
             'kps': kps,
             'azimuth_id': annotation['azimuth_id'],
         }

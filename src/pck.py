@@ -1,27 +1,22 @@
 import torch
-import numpy as np
 
 def get_bbox_size(bbox):
     """
-    Calculates the size (max dimension) of the bounding box.
+    Calculates the size (max dimension) of the bounding box using torch ops.
     
     Args:
-        bbox (torch.Tensor or np.ndarray): Bounding box in format [xmin, ymin, xmax, ymax].
+        bbox (torch.Tensor or array-like): Bounding box in format [xmin, ymin, xmax, ymax].
                                            Shape: (B, 4) or (4,)
     
     Returns:
-        torch.Tensor or np.ndarray: Size of the bounding box (max(w, h)).
+        torch.Tensor: Size of the bounding box (max(w, h)).
     """
+
     # Calculate width and height assuming [xmin, ymin, xmax, ymax]
-    # bbox[..., 2] is xmax, bbox[..., 0] is xmin
-    # bbox[..., 3] is ymax, bbox[..., 1] is ymin
     width = bbox[..., 2] - bbox[..., 0]
     height = bbox[..., 3] - bbox[..., 1]
     
-    if isinstance(bbox, torch.Tensor):
-        return torch.max(width, height)
-    else:
-        return np.maximum(width, height)
+    return torch.maximum(width, height)
 
 def compute_pck(pred_kps, gt_kps, bbox, alpha=0.1, mask=None, size_type='bbox'):
     """
