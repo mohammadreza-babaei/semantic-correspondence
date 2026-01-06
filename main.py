@@ -77,8 +77,8 @@ def main():
                                   help="Path to checkpoint to resume training from (e.g. checkpoints/best_model.pt)")
     fine_tune_parser.add_argument("--no-save-checkpoints", action="store_true",
                                   help="Disable saving checkpoints during training")
-    fine_tune_parser.add_argument("--temperature", type=float, default=1.0,
-                                  help="Temperature for softmax during inference (default: 1.0)")
+    fine_tune_parser.add_argument("--temperature", type=float, default=0.02,
+                                  help="Temperature for softmax during inference (default: 0.02)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
 
@@ -101,8 +101,8 @@ def main():
                              help="Print image bbased on index")
     eval_parser.add_argument("--window-size", type=int, default=5,
                              help="Window size for local refinement in window-based prediction (default: 5)")
-    eval_parser.add_argument("--temperature", type=float, default=1.0,
-                             help="Temperature for softmax during inference (default: 1.0)")
+    eval_parser.add_argument("--temperature", type=float, default=0.02,
+                             help="Temperature for softmax during inference (default: 0.02)")
     
     args = parser.parse_args()
 
