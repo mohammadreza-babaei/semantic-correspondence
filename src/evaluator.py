@@ -47,14 +47,14 @@ class PCKEvaluator:
             pred_g_norm = predict_keypoints(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
-                temperature=0.1
+                temperature=0.02
             )
             # 2. Window Prediction
             pred_w_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
                 window_size=self.window_size,
-                temperature=0.1
+                temperature=0.02
             )
 
         # Accumulators
@@ -170,13 +170,13 @@ class PCKEvaluator:
             pred_global_norm = predict_keypoints(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
-                temperature=0.1
+                temperature=0.02
             )
             pred_window_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
                 window_size=self.window_size,
-                temperature=0.1
+                temperature=0.02
             )
             
             # Denormalize predictions using shared helper
