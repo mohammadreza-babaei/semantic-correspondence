@@ -99,8 +99,22 @@ class SPair71kPairs(Dataset):
     def __len__(self) -> int:
         return len(self.pairs.keys())
     
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        pair_id = self.pair_ids[idx]
+    def get_pair_by_id(self, pair_id: str) -> Dict[str, Any]:
+        """Get a pair by its pair_id.
+        
+        Args:
+            pair_id: The pair_id to retrieve (e.g., 'trn:aeroplane-0001:aeroplane-0010')
+        
+        Returns:
+            Dictionary containing all pair data (same format as __getitem__)
+            
+        Raises:
+            KeyError: If pair_id is not found in the dataset
+        """
+        if pair_id not in self.pairs:
+            raise KeyError(f"Pair ID '{pair_id}' not found in {self.split} split. "
+                          f"Available pair IDs: {len(self.pairs)} pairs")
+        
         data = self.pairs[pair_id]
         category = data['category']
         
@@ -156,6 +170,10 @@ class SPair71kPairs(Dataset):
             'truncation': data['truncation'],
             'occlusion': data['occlusion'],
         }
+    
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        pair_id = self.pair_ids[idx]
+        return self.get_pair_by_id(pair_id)
 
 
 class SPair71kImages(Dataset):

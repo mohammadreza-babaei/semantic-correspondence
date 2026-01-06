@@ -469,6 +469,89 @@ class PCKEvaluator:
         plt.savefig(save_path, dpi=100)
         plt.close(fig)
 
+    def evaluate_pair_by_id(self, pair_id, output_dir="single_evals", alpha=0.1):
+        """
+        Runs evaluation on a single pair by its pair_id.
+        Computes AND Visualizes both Global and Window methods.
+        
+        Args:
+            pair_id: The pair_id string to evaluate (e.g., 'trn:aeroplane-0001:aeroplane-0010')
+            output_dir: Directory to save visualization outputs
+            alpha: Transparency for heatmap overlay
+        """
+        try:
+            sample = self.dataset.get_pair_by_id(pair_id)
+        except KeyError as e:
+            print(f"Error: {e}")
+            return
+
+        s_name = sample['src_name']
+        t_name = sample['trg_name']
+        
+        # Load Raw Data
+        src_kps_raw = torch.tensor(sample['src_kps'], dtype=torch.float32)
+        trg_kps_raw = torch.tensor(sample['trg_kps'], dtype=torch.float32)
+        trg_bbox = torch.tensor(sample['trg_bndbox'], dtype=torch.float32)
+
+        print(f"\n--- Evaluating Pair ID: {pair_id} ---")
+        print(f"Source: {s_name}")
+        print(f"Target: {t_name}")
+
+        # 2. Load Features
+        feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
+            s_name, t_name, requires_grad=False
+        )
+
+        # 3. Prepare keypoints (no visibility filtering for eval)
+        src_kps_normed = src_kps_raw.clone()
+        trg_kps_normed = trg_kps_raw.clone()
+
+        # src_kps_normed[:, 0] /= src_orig_size[1]
+        # src_kps_normed[:, 1] /= src_orig_size[0]
+        # trg_kps_normed[:, 0] /= trg_orig_size[1]
+        # trg_kps_normed[:, 1] /= trg_orig_size[0]
+
+        # 4. Global method
+        matches_global = self.trainer._find_soft_correspondences(
+            feat1.unsqueeze(0), feat2.unsqueeze(0)
+        )
+        matches_global = matches_global.squeeze(0)
+        pred_kps_global = self.trainer._get_predicted_keypoints(
+            src_kps_normed, matches_global
+        )
+
+        # 5. Window method
+        matches_window = self.trainer._find_correspondences_window(
+            feat1.unsqueeze(0), feat2.unsqueeze(0),
+            self.window_size
+        )
+        matches_window = matches_window.squeeze(0)
+        pred_kps_window = self.trainer._get_predicted_keypoints(
+            src_kps_normed, matches_window
+        )
+
+        # 6. Compute PCK
+        from .pck import compute_pck
+        pck_global = compute_pck(
+            pred_kps_global, trg_kps_normed, trg_bbox, alpha=alpha
+        )
+        pck_window = compute_pck(
+            pred_kps_window, trg_kps_normed, trg_bbox, alpha=alpha
+        )
+
+        print(f"PCK (Global): {pck_global:.4f}")
+        print(f"PCK (Window): {pck_window:.4f}")
+
+        # 7. Visualize
+        os.makedirs(output_dir, exist_ok=True)
+        out_path = os.path.join(output_dir, f"{pair_id.replace(':', '_')}_comparison.png")
+
+        self._visualize_correspondences_comparison(
+            sample, matches_global, matches_window,
+            pck_global, pck_window, alpha, out_path
+        )
+        print(f"Saved comparison to: {out_path}")
+
     def evaluate_pair_by_index(self, pair_idx, output_dir="single_evals", alpha=0.1):
         """
         Runs evaluation on a single pair by index.
@@ -479,99 +562,10 @@ class PCKEvaluator:
             print(f"Error: Index {pair_idx} out of bounds.")
             return
 
-        sample = self.dataset[pair_idx]
-        s_name = sample['src_name']
-        t_name = sample['trg_name']
-        
-        # Load Raw Data
-        src_kps_raw = torch.tensor(sample['src_kps'], dtype=torch.float32)
-        trg_kps_raw = torch.tensor(sample['trg_kps'], dtype=torch.float32)
-        trg_bbox = torch.tensor(sample['trg_bndbox'], dtype=torch.float32)
-
-        print(f"\n--- Evaluating Pair Index: {pair_idx} ---")
-        print(f"Source: {s_name}")
-        print(f"Target: {t_name}")
-
-        # 2. Load Features
-        feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
-            s_name, t_name, requires_grad=False
-        )
-
-        # 3. Prepare keypoints (no visibility filtering for eval)
-        src_kps_std, _ = self.trainer._prepare_keypoints(
-            src_kps_raw, trg_kps_raw, src_orig_size, trg_orig_size, filter_visibility=False
-        )
-        src_input = src_kps_std.unsqueeze(0)  # Add batch dimension
-
-        # 4. Model Inference (BOTH Methods)
-        self.model.model.eval()
-        with torch.no_grad():
-            # A. Global Prediction
-            pred_global_norm = predict_keypoints(
-                feat1, feat2, src_input,
-                src_img_size=(self.standard_size, self.standard_size),
-                temperature=0.1
-            )
-            
-            # B. Window Prediction
-            pred_window_norm = predict_keypoints_window(
-                feat1, feat2, src_input,
-                src_img_size=(self.standard_size, self.standard_size),
-                window_size=self.window_size,
-                temperature=0.1
-            )
-
-        # 5. Denormalize using shared helper
-        pred_g_orig = denormalize_predictions(pred_global_norm, trg_orig_size).squeeze(0).cpu()
-        pred_w_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
-        
-        # 6. Compute Metrics for Both
-        def calc_score(pred_kps):
-            # Compute visibility mask
-            mask = (trg_kps_raw[:, 0] > 0) & (trg_kps_raw[:, 1] > 0)
-            pck, _ = compute_pck(pred_kps, trg_kps_raw, trg_bbox, alpha, mask)
-            
-            # Compute error for visible keypoints
-            dist = torch.norm(pred_kps - trg_kps_raw, dim=-1)
-            valid_mask = (trg_kps_raw[:, 0] > 0) & (trg_kps_raw[:, 1] > 0)
-            valid_dist = dist[valid_mask]
-            
-            if len(valid_dist) > 0:
-                err = valid_dist.mean().item()
-            else:
-                err = 0.0
-            return pck, err
-
-        pck_g, err_g = calc_score(pred_g_orig)
-        pck_w, err_w = calc_score(pred_w_orig)
-
-        print("-" * 40)
-        print(f"{'Method':<10} | {'PCK':<10} | {'Avg Error':<10}")
-        print("-" * 40)
-        print(f"{'Global':<10} | {pck_g:.2%}     | {err_g:.2f} px")
-        print(f"{'Window':<10} | {pck_w:.2%}     | {err_w:.2f} px")
-        print("-" * 40)
-
-        # 6. Visualize Comparison
-        src_bbox = torch.tensor(sample['src_bndbox'], dtype=torch.float32)
-        
-        res = {
-            'src_path': s_name,
-            'trg_path': t_name,
-            'src_kps': src_kps_raw.numpy(),
-            'trg_kps': trg_kps_raw.numpy(),
-            'pred_global': pred_g_orig.numpy(),
-            'pred_window': pred_w_orig.numpy(),
-            'pck_g': pck_g, 'err_g': err_g,
-            'pck_w': pck_w, 'err_w': err_w,
-            'src_bbox': src_bbox.numpy(),
-            'trg_bbox': trg_bbox.numpy()
-        }
-        
-        os.makedirs(output_dir, exist_ok=True)
-        save_path = os.path.join(output_dir, f"pair_{pair_idx}_comparison.png")
-        self._plot_pair_comparison(res, save_path)
-        print(f"Comparison image saved to: {save_path}")
+        # Get pair_id from index and delegate to evaluate_pair_by_id
+        pair_id = self.dataset.pair_ids[pair_idx]
+        print(f"Pair index {pair_idx} corresponds to pair_id: {pair_id}")
+        self.evaluate_pair_by_id(pair_id, output_dir=output_dir, alpha=alpha)
 
     def _plot_pair_comparison(self, res, save_path):
         """
