@@ -25,7 +25,7 @@ def get_bbox_size(bbox):
 
 def compute_pck(pred_kps, gt_kps, bbox, alpha=0.1, mask=None, size_type='bbox'):
     """
-    Calculates Percentage of Correct Keypoints (PCK).
+    Computes Percentage of Correct Keypoints (PCK).
     
     Based on the "Emergent Correspondence from Image Diffusion" paper,
     the standard metric is PCK@0.1 (bbox).
@@ -48,14 +48,8 @@ def compute_pck(pred_kps, gt_kps, bbox, alpha=0.1, mask=None, size_type='bbox'):
         pck (float): The mean PCK score (0.0 to 1.0).
         correct_mask (torch.Tensor): Boolean mask of correct predictions.
     """
-    # Ensure inputs are Tensors
-    if not isinstance(pred_kps, torch.Tensor):
-        pred_kps = torch.tensor(pred_kps)
-    if not isinstance(gt_kps, torch.Tensor):
-        gt_kps = torch.tensor(gt_kps)
-    if not isinstance(bbox, torch.Tensor):
-        bbox = torch.tensor(bbox)
-        
+    # Inputs are expected to be torch.Tensor with correct shapes (no runtime conversion here)
+
     # Calculate Euclidean distance between prediction and ground truth
     # Shape: (B, N) or (N,)
     dist = torch.norm(pred_kps - gt_kps, dim=-1)
@@ -75,10 +69,7 @@ def compute_pck(pred_kps, gt_kps, bbox, alpha=0.1, mask=None, size_type='bbox'):
     
     # Apply mask if provided
     if mask is not None:
-        if not isinstance(mask, torch.Tensor):
-            mask = torch.tensor(mask).bool()
-        
-        # Only consider masked (valid) points
+        # mask expected to be a boolean torch.Tensor
         valid_correct = correct[mask]
         
         if valid_correct.numel() == 0:
@@ -133,9 +124,7 @@ def compute_raw_distances(pred_kps, gt_kps, bbox):
         dist: (B, N) - Distance in pixels
         bbox_size: (B,) - Max bbox dimension in pixels
     """
-    if not isinstance(pred_kps, torch.Tensor): pred_kps = torch.tensor(pred_kps)
-    if not isinstance(gt_kps, torch.Tensor): gt_kps = torch.tensor(gt_kps)
-    if not isinstance(bbox, torch.Tensor): bbox = torch.tensor(bbox)
+    # Inputs are expected to be torch.Tensor (no runtime conversion here)
         
     dist = torch.norm(pred_kps - gt_kps, dim=-1) # (B, N)
     bbox_size = get_bbox_size(bbox)              # (B,)

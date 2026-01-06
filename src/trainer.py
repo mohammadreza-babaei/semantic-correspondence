@@ -149,10 +149,7 @@ class Trainer():
             tuple: (src_kps_scaled, trg_kps_scaled) in standard_size coordinates
                    Both are (M, 2) tensors where M <= N if filtered
         """
-        # Convert to tensors
-        if not isinstance(src_kps, torch.Tensor):
-            src_kps = torch.tensor(src_kps, dtype=torch.float32)
-            trg_kps = torch.tensor(trg_kps, dtype=torch.float32)
+        # src_kps and trg_kps are expected to be torch.Tensor with shape (N, 2) or (N, 3)
         
         src_orig_w, src_orig_h = src_orig_size
         trg_orig_w, trg_orig_h = trg_orig_size

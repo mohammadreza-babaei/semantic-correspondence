@@ -73,7 +73,6 @@ class DINOv2Adapter:
             # Load pretrained model from torch.hub
             print(f"Loading {model_name} with pretrained weights from torch.hub...")
             self.model = torch.hub.load('facebookresearch/dinov2', model_name).to(self.device)
-        
         self.model.eval() # Set to evaluation mode (frozen features)
         
         # Store number of unfrozen blocks for feature caching logic

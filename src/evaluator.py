@@ -162,8 +162,6 @@ class PCKEvaluator:
             
             # Scale Source Keypoints: Original -> Standard
             curr_src_kps = src_kps_raw[i] if B > 1 else src_kps_raw
-            if not isinstance(curr_src_kps, torch.Tensor): 
-                curr_src_kps = torch.tensor(curr_src_kps, dtype=torch.float32)
                 
             src_kps_std = curr_src_kps.clone()
             src_kps_std[:, 0] *= (self.standard_size / src_orig_w)
@@ -189,11 +187,8 @@ class PCKEvaluator:
             
             # Get ground truth keypoints and bounding box
             curr_trg_kps = trg_kps_raw[i] if B > 1 else trg_kps_raw
-            if not isinstance(curr_trg_kps, torch.Tensor):
-                curr_trg_kps = torch.tensor(curr_trg_kps)
             
             curr_bbox = trg_bbox[i] if B > 1 else trg_bbox
-            if not isinstance(curr_bbox, torch.Tensor): curr_bbox = torch.tensor(curr_bbox)
             
             # Compute distances and threshold using standardized functions
             dist_global, bbox_size_tensor = compute_raw_distances(
@@ -259,8 +254,6 @@ class PCKEvaluator:
                 
                 # Get source bbox
                 curr_src_bbox = batch['src_bndbox'][i] if B > 1 else batch['src_bndbox']
-                if not isinstance(curr_src_bbox, torch.Tensor):
-                    curr_src_bbox = torch.tensor(curr_src_bbox)
                 
                 self.pair_results.append({
                     'src_path': s_name,
