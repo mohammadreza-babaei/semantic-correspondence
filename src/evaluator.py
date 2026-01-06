@@ -11,7 +11,7 @@ import pandas as pd
 
 # Import the helpers
 from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
-from src.pck import compute_pck
+from src.pck import compute_pck, compute_raw_distances, get_bbox_size
 
 class PCKEvaluator:
     def __init__(self, trainer, device, dataset=None, window_size=5):
@@ -118,7 +118,7 @@ class PCKEvaluator:
             ])
 
             with torch.no_grad():
-                for batch_idx, batch in enumerate(tqdm(dataloader, desc="Eval")):
+                for batch_idx, batch in enumerate(tqdm(dataloader, desc="Eval"), start=1):
                     self._process_batch(batch, batch_idx, writer, alpha)
         
         print(f"Evaluation finished. CSV Results saved.")
@@ -187,18 +187,30 @@ class PCKEvaluator:
             pred_global_orig = denormalize_predictions(pred_global_norm, trg_orig_size).squeeze(0).cpu()
             pred_window_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
             
-            # Compute Errors
+            # Get ground truth keypoints and bounding box
             curr_trg_kps = trg_kps_raw[i] if B > 1 else trg_kps_raw
             if not isinstance(curr_trg_kps, torch.Tensor):
                 curr_trg_kps = torch.tensor(curr_trg_kps)
-                
-            dist_global = torch.norm(pred_global_orig - curr_trg_kps, dim=-1)
-            dist_window = torch.norm(pred_window_orig - curr_trg_kps, dim=-1)
             
-            # Compute Threshold
             curr_bbox = trg_bbox[i] if B > 1 else trg_bbox
             if not isinstance(curr_bbox, torch.Tensor): curr_bbox = torch.tensor(curr_bbox)
-            bbox_size = max(curr_bbox[2]-curr_bbox[0], curr_bbox[3]-curr_bbox[1]).item()
+            
+            # Compute distances and threshold using standardized functions
+            dist_global, bbox_size_tensor = compute_raw_distances(
+                pred_global_orig.unsqueeze(0), 
+                curr_trg_kps.unsqueeze(0), 
+                curr_bbox.unsqueeze(0)
+            )
+            dist_global = dist_global.squeeze(0)  # Remove batch dimension
+            bbox_size = bbox_size_tensor.item()
+            
+            dist_window, _ = compute_raw_distances(
+                pred_window_orig.unsqueeze(0),
+                curr_trg_kps.unsqueeze(0),
+                curr_bbox.unsqueeze(0)
+            )
+            dist_window = dist_window.squeeze(0)  # Remove batch dimension
+            
             threshold = alpha * bbox_size
             
             # Logging to CSV & Accumulating Pair Stats
@@ -234,7 +246,15 @@ class PCKEvaluator:
 
             # --- Store Pair Results for Best/Worst Analysis ---
             if pair_visible_count > 0:
-                pck_score = pair_correct_count / pair_visible_count
+                # Compute PCK using standardized function
+                visibility_mask = (curr_trg_kps[:, 0] > 0) & (curr_trg_kps[:, 1] > 0)
+                pck_score, _ = compute_pck(
+                    pred_window_orig, 
+                    curr_trg_kps, 
+                    curr_bbox, 
+                    alpha, 
+                    visibility_mask
+                )
                 avg_error = pair_total_error / pair_visible_count
                 
                 # Get source bbox

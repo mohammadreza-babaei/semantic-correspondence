@@ -72,6 +72,9 @@ class SPair71kPairs(Dataset):
             with open(pair_file, 'r') as f:
                 data = json.load(f)
                 self.pairs[data['pair_id']] = data
+        
+        # Store sorted pair_ids for efficient indexing
+        self.pair_ids = sorted(self.pairs.keys())
     
     def get_image_path(self, img_name: str) -> Path:
         """Get the absolute path to an image by its name."""
@@ -97,7 +100,8 @@ class SPair71kPairs(Dataset):
         return len(self.pairs.keys())
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        data = self.pairs[idx]
+        pair_id = self.pair_ids[idx]
+        data = self.pairs[pair_id]
         category = data['category']
         
         # Load source image and segmentation
