@@ -10,7 +10,7 @@ import pandas as pd
 
 # Import the helpers
 from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
-from src.pck import compute_pck, get_bbox_size
+from src.pck import compute_pck, get_bbox_size, compute_pck_from_batch
 
 class PCKEvaluator:
     def __init__(self, trainer, device, dataset=None, window_size=5, temperature=0.02):
