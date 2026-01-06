@@ -10,7 +10,7 @@ import pandas as pd
 
 # Import the helpers
 from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
-from src.pck import compute_pck, compute_raw_distances, get_bbox_size
+from src.pck import compute_pck, get_bbox_size
 
 class PCKEvaluator:
     def __init__(self, trainer, device, dataset=None, window_size=5):
@@ -112,8 +112,7 @@ class PCKEvaluator:
             writer.writerow([
                 'pair_idx', 'src_img', 'trg_img', 'category', 'kps_idx', 
                 'bbox_size', 'threshold', 'is_visible',
-                'pixel_error_global', 'is_correct_global', 
-                'pixel_error_window', 'is_correct_window'
+                'is_correct_global', 'is_correct_window'
             ])
 
             with torch.no_grad():
@@ -189,22 +188,28 @@ class PCKEvaluator:
             
             curr_bbox = trg_bbox[i] if B > 1 else trg_bbox
             
-            # Compute distances and threshold using standardized functions
-            dist_global, bbox_size_tensor = compute_raw_distances(
-                pred_global_orig.unsqueeze(0), 
-                curr_trg_kps.unsqueeze(0), 
-                curr_bbox.unsqueeze(0)
-            )
-            dist_global = dist_global.squeeze(0)  # Remove batch dimension
-            bbox_size = bbox_size_tensor.item()
+            # Compute visibility mask
+            visibility_mask = (curr_trg_kps[:, 0] > 0) & (curr_trg_kps[:, 1] > 0)
             
-            dist_window, _ = compute_raw_distances(
-                pred_window_orig.unsqueeze(0),
-                curr_trg_kps.unsqueeze(0),
-                curr_bbox.unsqueeze(0)
+            # Compute PCK scores using standardized functions
+            _, correct_mask_global = compute_pck(
+                pred_global_orig,
+                curr_trg_kps,
+                curr_bbox,
+                alpha,
+                visibility_mask
             )
-            dist_window = dist_window.squeeze(0)  # Remove batch dimension
             
+            _, correct_mask_window = compute_pck(
+                pred_window_orig,
+                curr_trg_kps,
+                curr_bbox,
+                alpha,
+                visibility_mask
+            )
+            
+            # Get bbox size and threshold for logging
+            bbox_size = get_bbox_size(curr_bbox).item()
             threshold = alpha * bbox_size
             
             # Logging to CSV & Accumulating Pair Stats
@@ -214,42 +219,29 @@ class PCKEvaluator:
             # Stats accumulators for visualization ranking
             pair_correct_count = 0
             pair_visible_count = 0
-            pair_total_error = 0.0
 
-            num_kps = dist_global.shape[0]
+            num_kps = correct_mask_global.shape[0]
             for k in range(num_kps):
-                err_g = dist_global[k].item()
-                err_w = dist_window[k].item()
-                is_visible = (curr_trg_kps[k, 0] > 0) and (curr_trg_kps[k, 1] > 0)
-                is_correct_g = (err_g <= threshold) and is_visible
-                is_correct_w = (err_w <= threshold) and is_visible
+                is_visible = visibility_mask[k].item()
+                is_correct_g = correct_mask_global[k].item()
+                is_correct_w = correct_mask_window[k].item()
                 
                 if is_visible:
                     writer.writerow([
                         batch_idx, s_name, t_name, category, k, 
                         f"{bbox_size:.2f}", f"{threshold:.4f}", int(is_visible),
-                        f"{err_g:.4f}", int(is_correct_g),
-                        f"{err_w:.4f}", int(is_correct_w)
+                        int(is_correct_g), int(is_correct_w)
                     ])
                     
                     # For visualization ranking, we primarily use the Window method score
                     pair_visible_count += 1
-                    pair_total_error += err_w
                     if is_correct_w:
                         pair_correct_count += 1
 
             # --- Store Pair Results for Best/Worst Analysis ---
             if pair_visible_count > 0:
-                # Compute PCK using standardized function
-                visibility_mask = (curr_trg_kps[:, 0] > 0) & (curr_trg_kps[:, 1] > 0)
-                pck_score, _ = compute_pck(
-                    pred_window_orig, 
-                    curr_trg_kps, 
-                    curr_bbox, 
-                    alpha, 
-                    visibility_mask
-                )
-                avg_error = pair_total_error / pair_visible_count
+                # Compute overall PCK score for this pair
+                pck_score = pair_correct_count / pair_visible_count
                 
                 # Get source bbox
                 curr_src_bbox = batch['src_bndbox'][i] if B > 1 else batch['src_bndbox']
@@ -261,7 +253,6 @@ class PCKEvaluator:
                     'trg_kps': curr_trg_kps.numpy(),
                     'pred_kps': pred_window_orig.numpy(), # Using Window prediction for vis
                     'pck': pck_score,
-                    'error': avg_error,
                     'src_bbox': curr_src_bbox.numpy(),
                     'trg_bbox': curr_bbox.numpy()
                 })
@@ -362,8 +353,8 @@ class PCKEvaluator:
         os.makedirs(os.path.join(save_dir, 'best'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'worst'), exist_ok=True)
 
-        # Sort: Primary key = PCK (Desc), Secondary key = Error (Asc -> using negative for sort)
-        sorted_res = sorted(self.pair_results, key=lambda x: (x['pck'], -x['error']), reverse=True)
+        # Sort by PCK score (descending)
+        sorted_res = sorted(self.pair_results, key=lambda x: x['pck'], reverse=True)
 
         best_pairs = sorted_res[:k]
         worst_pairs = sorted_res[-k:]
@@ -425,7 +416,7 @@ class PCKEvaluator:
 
         # 2. Target Image + Pred vs GT
         ax[1].imshow(trg_img)
-        ax[1].set_title(f"Target (PCK: {res['pck']:.2f}, Err: {res['error']:.1f}px)")
+        ax[1].set_title(f"Target (PCK: {res['pck']:.2f})")
         ax[1].axis('off')
         
         # Draw target bounding box if available

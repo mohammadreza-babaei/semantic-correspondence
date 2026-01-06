@@ -8,7 +8,6 @@ from torch.utils.data import DataLoader
 from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter, TinyViTAdapter
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
-from src.pck import compute_raw_distances
 from src.evaluator import PCKEvaluator
 
 
