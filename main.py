@@ -281,21 +281,21 @@ def evaluate(args):
             model_name=args.model_name,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=None
+            weights_path=args.weights_path
         )
     elif "dinov3" in args.model_name:
         adapter = DINOv3Adapter(
             model_name=args.model_name,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=None
+            weights_path=args.weights_path
         )
     elif "sam" in args.model_name:
         adapter = SAMAdapter(
             model_name=args.model_name.replace("sam_", ""),
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=None,
+            weights_path=args.weights_path,
             unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
         )
     elif "tiny_vit" in args.model_name:
@@ -308,6 +308,8 @@ def evaluate(args):
     else:
         raise ValueError(f"Unknown model: {args.model_name}")
     
+    """
+
     # 3. Load Trained Weights (The Fine-Tuned Checkpoint)
     # This is where we load epoch.pt
     if args.weights_path and os.path.exists(args.weights_path):
@@ -327,6 +329,8 @@ def evaluate(args):
              print("Error: Checkpoint format not recognized (expected dict).")
     else:
         print(f"Warning: Checkpoint not found at {args.weights_path}. Using base/random weights.")
+
+    """
 
     # 4. Initialize Trainer (Wrapper for Caching)
     trainer = Trainer(
