@@ -19,7 +19,7 @@ except ImportError:
 
 # TinySAM native resolution is 1024, but for correspondence 512 is often sufficient/faster.
 # Matches your other adapters.
-STANDARD_SIZE = 512
+STANDARD_SIZE = 1024
 
 class TinySAMAdapter:
     def __init__(
@@ -33,6 +33,7 @@ class TinySAMAdapter:
         use_lora=False,
         lora_rank=8,
         lora_alpha=16,
+        resolution=None
     ):
         """
         Initializes the TinySAM model (XinghaoChen implementation).
@@ -49,7 +50,7 @@ class TinySAMAdapter:
             raise ImportError("TinySAM not installed.")
 
         self.device = device
-        self.standard_size = STANDARD_SIZE
+        self.standard_size = resolution if resolution is not None else STANDARD_SIZE
         self.model_name = "tinysam_" + model_name
         self.patch_size = 16 # TinyViT generally acts like patch 16 at output
         
@@ -57,7 +58,10 @@ class TinySAMAdapter:
         
         # 1. Load Model
         # We pass checkpoint=None to avoid loading inside the registry (we handle it below)
-        self.sam_model = sam_model_registry[model_name](checkpoint=None)
+        if resolution is not None:
+             self.sam_model = sam_model_registry[model_name](checkpoint=None, image_size=resolution)
+        else:
+             self.sam_model = sam_model_registry[model_name](checkpoint=None)
         self.model = self.sam_model.image_encoder
         
         # 2. Load Weights Manually (Robust Loading)
@@ -129,6 +133,9 @@ class TinySAMAdapter:
         trainable = sum(p.numel() for p in self.sam_model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.sam_model.parameters())
         print(f"Trainable Params: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
+        # Dropout
+        self.dropout = nn.Dropout2d(p=dropout) if dropout > 0 else nn.Identity()
+
         self.trainable_params = [p for p in self.sam_model.parameters() if p.requires_grad]
 
     def preprocess_image(self, image_path, target_size=None):
@@ -187,27 +194,18 @@ class TinySAMAdapter:
                     blocks_processed += len(stage_blocks)
                 else:
                     # We are in the split stage. Run only the frozen blocks within this stage.
-                    # Note: TinyViT stages usually have a downsample layer at the start/end.
-                    # This makes splitting *inside* a stage tricky if the implementation 
-                    # bundles downsample + blocks into `forward`.
-                    # Fortunatley, TinySAM/MobileSAM usually expose `blocks` explicitly.
-                    
-                    # If the stage has a downsample layer, run it first (usually)
-                    if hasattr(stage, 'downsample') and stage.downsample is not None:
-                        x = stage.downsample(x)
                     
                     # Run remaining frozen blocks individually
                     for block in stage_blocks:
                         if blocks_processed < self.num_frozen_blocks:
-                            # Usually TinyViT blocks expect (x)
-                            # But some implementations (window attn) might need size.
-                            # TinySAM implementation usually handles size internally or expects (B, H, W, C)
                             x = block(x)
                             blocks_processed += 1
                         else:
                             break # Stop exactly at the cut-off
                     
                     # We stop here. 'x' is now the input to the first Unfrozen block.
+                    # We DO NOT run downsample here, because in TinyViT downsample is at the END.
+                    # It will be run in forward_unfrozen_blocks after the remaining blocks.
                     break
                     
             return x
@@ -241,24 +239,27 @@ class TinySAMAdapter:
             
             # We are in a stage that has unfrozen blocks
             
-            # 1. Handle Downsample: 
-            # If we started *mid-stage* (blocks_processed > current_block_count),
-            # the downsample was already run in extract().
-            # If we are starting at the *beginning* of this stage, run downsample.
-            if current_block_count >= blocks_processed:
-                 if hasattr(stage, 'downsample') and stage.downsample is not None:
-                        x = stage.downsample(x)
-
-            # 2. Run Unfrozen Blocks
+            # Run Unfrozen Blocks
             for i, block in enumerate(stage_blocks):
                 global_idx = current_block_count + i
                 if global_idx >= self.num_frozen_blocks:
                     x = block(x)
+                    
+            # Run Downsample at the end of the stage
+            if hasattr(stage, 'downsample') and stage.downsample is not None:
+                x = stage.downsample(x)
             
             current_block_count += n_blocks
 
         # Final processing
-        # TinySAM/MobileSAM ImageEncoder outputs (B, H, W, C)
+        # TinyViT outputs (B, L, C) at the end
+        if x.dim() == 3:
+            B, L, C = x.shape
+            H = int(L**0.5)
+            W = H
+            x = x.view(B, H, W, C)
+        
+        # Now x is (B, H, W, C)
         # Neck expects (B, C, H, W)
         x = x.permute(0, 3, 1, 2) 
         x = self.model.neck(x)

@@ -5,7 +5,7 @@ import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
 
-from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter, TinyViTAdapter
+from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter, TinyViTAdapter, TinySAMAdapter
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 from src.evaluator import PCKEvaluator
@@ -22,7 +22,7 @@ def main():
                                   choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 
                                            'dinov3_vits16',
                                            'sam_vit_b', 'sam_vit_l', 'sam_vit_h',
-                                           'tiny_vit'],
+                                           'tiny_vit', 'tinysam_vit_t'],
                                   help="Model variant to use (DINOv2, DINOv3, or SAM)")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
@@ -79,6 +79,8 @@ def main():
                                   help="Disable saving checkpoints during training")
     fine_tune_parser.add_argument("--temperature", type=float, default=0.02,
                                   help="Temperature for softmax during inference (default: 0.02)")
+    fine_tune_parser.add_argument("--resolution", type=int, default=None,
+                                  help="Force specific input resolution (e.g. 1024 for TinySAM)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
 
@@ -103,6 +105,8 @@ def main():
                              help="Window size for local refinement in window-based prediction (default: 5)")
     eval_parser.add_argument("--temperature", type=float, default=0.02,
                              help="Temperature for softmax during inference (default: 0.02)")
+    eval_parser.add_argument("--resolution", type=int, default=None,
+                             help="Force specific input resolution (e.g. 1024 for TinySAM)")
     
     args = parser.parse_args()
 
@@ -115,6 +119,8 @@ def main():
         model_type = "sam"
     elif "tiny_vit" in args.model_name:
         model_type = "tiny_vit"
+    elif "tinysam" in args.model_name:
+        model_type = "tinysam"
     else:
         # Fallback or error, though choices constraint handles most valid cases
         if "dino" in args.model_name:
@@ -206,6 +212,18 @@ def fine_tune(args, model_type):
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
+        )
+    elif model_type == 'tinysam':
+        fine_tuner = TinySAMAdapter(
+            model_name='vit_t',
+            weights_path=args.weights_path,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            dropout=args.dropout,
+            use_lora=args.use_lora,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            resolution=args.resolution
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -308,6 +326,14 @@ def evaluate(args):
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
+        )
+    elif "tinysam" in args.model_name:
+        adapter = TinySAMAdapter(
+            model_name='vit_t',
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=args.weights_path,
+            resolution=args.resolution
         )
     else:
         raise ValueError(f"Unknown model: {args.model_name}")
