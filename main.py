@@ -93,8 +93,8 @@ def main():
                              help="Folder containing 'best_model.pt'")
     eval_parser.add_argument("--weights-path", type=str, default=None,
                              help="Explicit path to the .pt file (e.g., epoch_5.pt)")
-    eval_parser.add_argument("--alpha", type=float, default=0.1,
-                             help="PCK threshold factor")
+    eval_parser.add_argument("--alpha", type=str, default="0.1",
+                             help="PCK threshold factor(s) - comma-separated for multiple values (e.g., '0.1,0.05,0.01')")
     eval_parser.add_argument("--split", type=str, default="val", choices=["test", "val"], 
                              help="Dataset split to evaluate on")
     eval_parser.add_argument("--plot-pair", type=int, default=None,
@@ -365,12 +365,16 @@ def evaluate(args):
         test_single_sample(trainer, device, eval_dataset, args.plot_pair, window_size=args.window_size)
         return
     
-    results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha{args.alpha}.csv"
+    # Parse alpha values from comma-separated string to list of floats
+    alphas = [float(a.strip()) for a in args.alpha.split(',')]
+    alphas_str = '_'.join([str(a) for a in alphas])
+    
+    results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha_{alphas_str}.csv"
 
     # 8. Print Results
     print("\n")
-    print(f"Results for {args.split} Alpha {args.alpha}:")
-    evaluator.evaluate(eval_loader, results_file, alpha=args.alpha)
+    print(f"Results for {args.split} with alpha values: {alphas}")
+    evaluator.evaluate(eval_loader, results_file, alphas=alphas)
     PCKEvaluator.process_results(results_file, "evaluations/metrics")
     
 
