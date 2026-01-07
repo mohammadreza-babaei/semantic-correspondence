@@ -5,7 +5,7 @@ import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
 
-from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter, TinyViTAdapter
+from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter, TinyViTAdapter, TinySAMAdapter
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 from src.evaluator import PCKEvaluator
@@ -22,7 +22,8 @@ def main():
                                   choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 
                                            'dinov3_vits16',
                                            'sam_vit_b', 'sam_vit_l', 'sam_vit_h',
-                                           'tiny_vit'],
+                                           'tiny_vit',
+                                           'tiny_sam'],
                                   help="Model variant to use (DINOv2, DINOv3, or SAM)")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
@@ -111,6 +112,8 @@ def main():
         model_type = "dinov2"
     elif "dinov3" in args.model_name:
         model_type = "dinov3"
+    elif "tiny_sam" in args.model_name:
+        model_type = "tiny_sam"
     elif "sam" in args.model_name:
         model_type = "sam"
     elif "tiny_vit" in args.model_name:
@@ -206,6 +209,18 @@ def fine_tune(args, model_type):
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
+        )
+    elif model_type == 'tiny_sam':
+        fine_tuner = TinySAMAdapter(
+            model_name=args.model_name,
+            weights_path=args.weights_path,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            dropout=args.dropout,
+            unfreeze_neck=args.unfreeze_neck,
+            use_lora=args.use_lora,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -309,33 +324,18 @@ def evaluate(args):
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
         )
+    elif "tiny_sam" in args.model_name:
+        adapter = TinyViTAdapter(
+            model_name = args.model_name,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=args.weights_path,
+            unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
+        )
     else:
         raise ValueError(f"Unknown model: {args.model_name}")
     
-    """
-
-    # 3. Load Trained Weights (The Fine-Tuned Checkpoint)
-    # This is where we load epoch.pt
-    if args.weights_path and os.path.exists(args.weights_path):
-        print(f"Loading fine-tuned checkpoint from: {args.weights_path}")
-        checkpoint = torch.load(args.weights_path, map_location=device, weights_only=False)
-        
-        # Determine how to unwrap the checkpoint
-        if isinstance(checkpoint, dict):
-            if 'model_state' in checkpoint:
-                adapter.load_model_state(checkpoint['model_state'])
-            elif 'backbone_state_dict' in checkpoint:
-                adapter.load_model_state(checkpoint)
-            else:
-                # Fallback: assume the dict itself is the state dict
-                adapter.load_model_state(checkpoint)
-        else:
-             print("Error: Checkpoint format not recognized (expected dict).")
-    else:
-        print(f"Warning: Checkpoint not found at {args.weights_path}. Using base/random weights.")
-
-    """
-
+    
     # 4. Initialize Trainer (Wrapper for Caching)
     trainer = Trainer(
         model=adapter,
