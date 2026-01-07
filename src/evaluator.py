@@ -138,121 +138,109 @@ class PCKEvaluator:
         # 1. Unpack Metadata
         src_name = batch['src_name']
         trg_name = batch['trg_name']
-        src_kps_raw = batch['src_kps'] 
-        trg_kps_raw = batch['trg_kps']
+        src_kps = batch['src_kps'] 
+        trg_kps = batch['trg_kps']
         trg_bbox = batch['trg_bndbox']
         
-        B = 1
+        # Use trainer's helper for feature loading (with error handling)
+        feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
+            src_name, trg_name, requires_grad=False
+        )
         
-        for i in range(B):
-            s_name = src_name
-            t_name = trg_name
+        trg_orig_w, trg_orig_h = trg_orig_size
+        src_orig_w, src_orig_h = src_orig_size
+        
+        # Scale Source Keypoints: Original -> Standard
             
-            # Use trainer's helper for feature loading (with error handling)
-            feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
-                s_name, t_name, requires_grad=False
-            )
-            
-            trg_orig_w, trg_orig_h = trg_orig_size
-            src_orig_w, src_orig_h = src_orig_size
-            
-            # Scale Source Keypoints: Original -> Standard
-            curr_src_kps = src_kps_raw[i] if B > 1 else src_kps_raw
-                
-            src_kps_std = curr_src_kps.clone()
-            src_kps_std[:, 0] *= (self.standard_size / src_orig_w)
-            src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
-            src_input = src_kps_std.to(self.device).unsqueeze(0)
-            
-            # Predict (Both Methods)
-            pred_global_norm = predict_keypoints(
-                feat1, feat2, src_input,
-                src_img_size=(self.standard_size, self.standard_size),
-                temperature=self.temperature
-            )
-            pred_window_norm = predict_keypoints_window(
-                feat1, feat2, src_input,
-                src_img_size=(self.standard_size, self.standard_size),
-                window_size=self.window_size,
-                temperature=self.temperature
-            )
-            
-            # Denormalize predictions using shared helper
-            pred_global_orig = denormalize_predictions(pred_global_norm, trg_orig_size).squeeze(0).cpu()
-            pred_window_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
-            
-            # Get ground truth keypoints and bounding box
-            curr_trg_kps = trg_kps_raw
-            
-            curr_bbox = trg_bbox
-            
-            # Compute visibility mask
-            visibility_mask = (curr_trg_kps[:, 0] > 0) & (curr_trg_kps[:, 1] > 0)
-            
-            # Compute PCK scores using standardized functions
-            _, correct_mask_global = compute_pck(
-                pred_global_orig,
-                curr_trg_kps,
-                curr_bbox,
-                alpha,
-                visibility_mask
-            )
-            
-            _, correct_mask_window = compute_pck(
-                pred_window_orig,
-                curr_trg_kps,
-                curr_bbox,
-                alpha,
-                visibility_mask
-            )
-            
-            # Get bbox size and threshold for logging
-            bbox_size = get_bbox_size(curr_bbox).item()
-            threshold = alpha * bbox_size
-            
-            # Logging to CSV & Accumulating Pair Stats
-            category = batch.get('category', 'unknown')
-            
-            # Stats accumulators for visualization ranking
-            pair_correct_count = 0
-            pair_visible_count = 0
+        src_kps_std = src_kps.clone()
+        src_kps_std[:, 0] *= (self.standard_size / src_orig_w)
+        src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
+        src_input = src_kps_std.to(self.device).unsqueeze(0)
+        
+        # Predict (Both Methods)
+        pred_global_norm = predict_keypoints(
+            feat1, feat2, src_input,
+            src_img_size=(self.standard_size, self.standard_size),
+            temperature=self.temperature
+        )
+        pred_window_norm = predict_keypoints_window(
+            feat1, feat2, src_input,
+            src_img_size=(self.standard_size, self.standard_size),
+            window_size=self.window_size,
+            temperature=self.temperature
+        )
+        
+        # Denormalize predictions using shared helper
+        pred_global_orig = denormalize_predictions(pred_global_norm, trg_orig_size).squeeze(0).cpu()
+        pred_window_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
+        
+        # Compute visibility mask
+        visibility_mask = (trg_kps[:, 0] > 0) & (trg_kps[:, 1] > 0)
+        
+        # Compute PCK scores using standardized functions
+        _, correct_mask_global = compute_pck(
+            pred_global_orig,
+            trg_kps,
+            trg_bbox,
+            alpha,
+            visibility_mask
+        )
+        
+        _, correct_mask_window = compute_pck(
+            pred_window_orig,
+            trg_kps,
+            trg_bbox,
+            alpha,
+            visibility_mask
+        )
+        
+        # Get bbox size and threshold for logging
+        bbox_size = get_bbox_size(trg_bbox).item()
+        threshold = alpha * bbox_size
+        
+        # Logging to CSV & Accumulating Pair Stats
+        category = batch.get('category', 'unknown')
+        
+        # Stats accumulators for visualization ranking
+        pair_correct_count = 0
+        pair_visible_count = 0
 
-            num_kps = correct_mask_global.shape[0]
-            for k in range(num_kps):
-                is_visible = visibility_mask[k].item()
-                is_correct_g = correct_mask_global[k].item()
-                is_correct_w = correct_mask_window[k].item()
+        num_kps = correct_mask_global.shape[0]
+        for k in range(num_kps):
+            is_visible = visibility_mask[k].item()
+            is_correct_g = correct_mask_global[k].item()
+            is_correct_w = correct_mask_window[k].item()
+            
+            if is_visible:
+                writer.writerow([
+                    batch_idx, src_name, trg_name, category, k, 
+                    f"{bbox_size:.2f}", f"{threshold:.4f}", int(is_visible),
+                    int(is_correct_g), int(is_correct_w)
+                ])
                 
-                if is_visible:
-                    writer.writerow([
-                        batch_idx, s_name, t_name, category, k, 
-                        f"{bbox_size:.2f}", f"{threshold:.4f}", int(is_visible),
-                        int(is_correct_g), int(is_correct_w)
-                    ])
-                    
-                    # For visualization ranking, we primarily use the Window method score
-                    pair_visible_count += 1
-                    if is_correct_w:
-                        pair_correct_count += 1
+                # For visualization ranking, we primarily use the Window method score
+                pair_visible_count += 1
+                if is_correct_w:
+                    pair_correct_count += 1
 
-            # --- Store Pair Results for Best/Worst Analysis ---
-            if pair_visible_count > 0:
-                # Compute overall PCK score for this pair
-                pck_score = pair_correct_count / pair_visible_count
-                
-                # Get source bbox
-                curr_src_bbox = batch['src_bndbox'][i] if B > 1 else batch['src_bndbox']
-                
-                self.pair_results.append({
-                    'src_path': s_name,
-                    'trg_path': t_name,
-                    'src_kps': curr_src_kps.numpy(),
-                    'trg_kps': curr_trg_kps.numpy(),
-                    'pred_kps': pred_window_orig.numpy(), # Using Window prediction for vis
-                    'pck': pck_score,
-                    'src_bbox': curr_src_bbox.numpy(),
-                    'trg_bbox': curr_bbox.numpy()
-                })
+        # --- Store Pair Results for Best/Worst Analysis ---
+        if pair_visible_count > 0:
+            # Compute overall PCK score for this pair
+            pck_score = pair_correct_count / pair_visible_count
+            
+            # Get source bbox
+            curr_src_bbox = batch['src_bndbox']
+            
+            self.pair_results.append({
+                'src_path': src_name,
+                'trg_path': trg_name,
+                'src_kps': src_kps.numpy(),
+                'trg_kps': trg_kps.numpy(),
+                'pred_kps': pred_window_orig.numpy(), # Using Window prediction for vis
+                'pck': pck_score,
+                'src_bbox': curr_src_bbox.numpy(),
+                'trg_bbox': trg_bbox.numpy()
+            })
 
     def process_results(csv_path, save_dir):
         """
