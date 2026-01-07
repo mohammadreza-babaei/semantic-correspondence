@@ -112,14 +112,14 @@ class PCKEvaluator:
             writer = csv.writer(f)
             # Detailed Header
             writer.writerow([
-                'pair_idx', 'src_img', 'trg_img', 'category', 'kps_idx', 
+                'pair_id', 'src_img', 'trg_img', 'category', 'kps_idx', 
                 'is_visible',
                 'is_correct_global', 'is_correct_window'
             ])
 
             with torch.no_grad():
-                for batch_idx, batch in enumerate(tqdm(dataloader, desc="Eval"), start=1):
-                    self._process_batch(batch, batch_idx, writer, alpha)
+                for batch in tqdm(dataloader, desc="Eval"):
+                    self._process_pair(batch, writer, alpha)
         
         print(f"Evaluation finished. CSV Results saved.")
         
@@ -130,17 +130,18 @@ class PCKEvaluator:
 
         return output_path
 
-    def _process_batch(self, batch, batch_idx, writer, alpha):
+    def _process_pair(self, pair, writer, alpha):
         """
         Internal method for evaluate() loop. Handles data loading, CSV logging,
         and accumulating data for visualization.
         """
         # 1. Unpack Metadata
-        src_name = batch['src_name']
-        trg_name = batch['trg_name']
-        src_kps = batch['src_kps'] 
-        trg_kps = batch['trg_kps']
-        trg_bbox = batch['trg_bndbox']
+        pair_id = pair['pair_id']
+        src_name = pair['src_name']
+        trg_name = pair['trg_name']
+        src_kps = pair['src_kps'] 
+        trg_kps = pair['trg_kps']
+        trg_bbox = pair['trg_bndbox']
         
         # Use trainer's helper for feature loading (with error handling)
         feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
@@ -194,7 +195,7 @@ class PCKEvaluator:
         )
         
         # Logging to CSV & Accumulating Pair Stats
-        category = batch.get('category', 'unknown')
+        category = pair.get('category', 'unknown')
         
         # Stats accumulators for visualization ranking
         pair_correct_count = 0
@@ -208,7 +209,7 @@ class PCKEvaluator:
             
             if is_visible:
                 writer.writerow([
-                    batch_idx, src_name, trg_name, category, k, int(is_visible),
+                    pair_id, src_name, trg_name, category, k, int(is_visible),
                     int(is_correct_g), int(is_correct_w)
                 ])
                 
@@ -223,7 +224,7 @@ class PCKEvaluator:
             pck_score = pair_correct_count / pair_visible_count
             
             # Get source bbox
-            curr_src_bbox = batch['src_bndbox']
+            curr_src_bbox = pair['src_bndbox']
             
             self.pair_results.append({
                 'src_path': src_name,
@@ -254,12 +255,12 @@ class PCKEvaluator:
         def print_summary():
             # 1. Global Metrics
             pck_kps_g = df['is_correct_global'].mean()
-            img_scores_g = df.groupby(['pair_idx', 'src_img'])['is_correct_global'].mean()
+            img_scores_g = df.groupby(['pair_id', 'src_img'])['is_correct_global'].mean()
             pck_img_g = img_scores_g.mean()
             
             # 2. Window Metrics
             pck_kps_w = df['is_correct_window'].mean()
-            img_scores_w = df.groupby(['pair_idx', 'src_img'])['is_correct_window'].mean()
+            img_scores_w = df.groupby(['pair_id', 'src_img'])['is_correct_window'].mean()
             pck_img_w = img_scores_w.mean()
             
             print(f"Total Keypoints Evaluated: {len(df)}")
@@ -278,7 +279,7 @@ class PCKEvaluator:
             
             # Metric 2: Per-Image PCK (Global, Window & Per Category)
             # Formula: Average of (Correct / Visible) for each image pair
-            img_scores = df.groupby(['pair_idx', 'category'])[['is_correct_global', 'is_correct_window']].mean().reset_index()
+            img_scores = df.groupby(['pair_id', 'category'])[['is_correct_global', 'is_correct_window']].mean().reset_index()
             
             cat_pck_img_g = img_scores.groupby('category')['is_correct_global'].mean()
             cat_pck_img_w = img_scores.groupby('category')['is_correct_window'].mean()
