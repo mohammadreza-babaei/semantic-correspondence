@@ -42,7 +42,7 @@ class Trainer():
         self.cached_dataset = None  # Set in train()
 
         # Initialize Evaluator for validation consistency
-        self.evaluator = PCKEvaluator(self.model, self.device, temperature=self.temperature)
+        self.evaluator = PCKEvaluator(self, self.device, temperature=self.temperature)
         self.best_val_loss = float('inf')
         self.start_epoch = 0
 

@@ -25,14 +25,10 @@ class PCKEvaluator:
         self.trainer = trainer
         self.model = trainer.model # The adapter
         self.device = device
-        # Use the model's configured standard size (e.g., 518 or 528)
-        self.standard_size = getattr(self.model, 'standard_size', 518)
+        self.standard_size = self.model.standard_size
         self.dataset = dataset
         self.window_size = window_size
         self.temperature = temperature
-
-        # Buffer to store results for visualization
-        self.pair_results = []
 
     def compute_metrics_with_sizes(self, feat1, feat2, src_kps_std, batch, trg_sizes, alpha=0.1):
         """
@@ -104,9 +100,6 @@ class PCKEvaluator:
         print(f"Standard Size for Inference: {self.standard_size}x{self.standard_size}")
         print(f"Saving per-keypoint details to: {output_path}")
 
-        # Reset results buffer
-        self.pair_results = []
-
         # Open CSV for writing
         with open(output_path, 'w', newline='') as f:
             writer = csv.writer(f)
@@ -117,16 +110,18 @@ class PCKEvaluator:
                 'is_correct_global', 'is_correct_window'
             ])
 
+            pair_results = []
             with torch.no_grad():
                 for batch in tqdm(dataloader, desc="Eval"):
-                    self._process_pair(batch, writer, alpha)
+                    result = self._process_pair(batch, writer, alpha)
+                    pair_results.append(result)
         
         print(f"Evaluation finished. CSV Results saved.")
         
         # --- Visualization of Extremes ---
         if save_top_k > 0:
             vis_dir = os.path.join(os.path.dirname(output_path), "visualizations")
-            self.save_extremes(vis_dir, k=save_top_k)
+            self.save_extremes(pair_results, vis_dir, k=save_top_k)
 
         return output_path
 
@@ -226,7 +221,7 @@ class PCKEvaluator:
             # Get source bbox
             curr_src_bbox = pair['src_bndbox']
             
-            self.pair_results.append({
+            return {
                 'src_path': src_name,
                 'trg_path': trg_name,
                 'src_kps': src_kps.numpy(),
@@ -235,7 +230,7 @@ class PCKEvaluator:
                 'pck': pck_score,
                 'src_bbox': curr_src_bbox.numpy(),
                 'trg_bbox': trg_bbox.numpy()
-            })
+            }
 
     def process_results(csv_path, save_dir):
         """
@@ -321,20 +316,17 @@ class PCKEvaluator:
         print_summary()
         print_by_category()
 
-    def save_extremes(self, save_dir, k=5):
+    def save_extremes(self, pair_results, save_dir, k=5):
         """
         Sorts tracked results and visualizes Top K and Bottom K image pairs.
         """
-        if not self.pair_results:
-            print("No results available to visualize.")
-            return
 
         print(f"Generating visualizations for Top {k} and Bottom {k} results...")
         os.makedirs(os.path.join(save_dir, 'best'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'worst'), exist_ok=True)
 
         # Sort by PCK score (descending)
-        sorted_res = sorted(self.pair_results, key=lambda x: x['pck'], reverse=True)
+        sorted_res = sorted(pair_results, key=lambda x: x['pck'], reverse=True)
 
         best_pairs = sorted_res[:k]
         worst_pairs = sorted_res[-k:]
@@ -494,7 +486,6 @@ class PCKEvaluator:
         )
 
         # 6. Compute PCK
-        from .pck import compute_pck
         pck_global = compute_pck(
             pred_kps_global, trg_kps_normed, trg_bbox, alpha=alpha
         )
