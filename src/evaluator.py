@@ -113,7 +113,7 @@ class PCKEvaluator:
             # Detailed Header
             writer.writerow([
                 'pair_idx', 'src_img', 'trg_img', 'category', 'kps_idx', 
-                'bbox_size', 'threshold', 'is_visible',
+                'is_visible',
                 'is_correct_global', 'is_correct_window'
             ])
 
@@ -151,7 +151,6 @@ class PCKEvaluator:
         src_orig_w, src_orig_h = src_orig_size
         
         # Scale Source Keypoints: Original -> Standard
-            
         src_kps_std = src_kps.clone()
         src_kps_std[:, 0] *= (self.standard_size / src_orig_w)
         src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
@@ -194,10 +193,6 @@ class PCKEvaluator:
             visibility_mask
         )
         
-        # Get bbox size and threshold for logging
-        bbox_size = get_bbox_size(trg_bbox).item()
-        threshold = alpha * bbox_size
-        
         # Logging to CSV & Accumulating Pair Stats
         category = batch.get('category', 'unknown')
         
@@ -213,8 +208,7 @@ class PCKEvaluator:
             
             if is_visible:
                 writer.writerow([
-                    batch_idx, src_name, trg_name, category, k, 
-                    f"{bbox_size:.2f}", f"{threshold:.4f}", int(is_visible),
+                    batch_idx, src_name, trg_name, category, k, int(is_visible),
                     int(is_correct_g), int(is_correct_w)
                 ])
                 
