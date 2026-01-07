@@ -110,19 +110,11 @@ class PCKEvaluator:
                 'is_correct_global', 'is_correct_window'
             ])
 
-            pair_results = []
             with torch.no_grad():
                 for batch in tqdm(dataloader, desc="Eval"):
-                    result = self._process_pair(batch, writer, alpha)
-                    pair_results.append(result)
+                    self._process_pair(batch, writer, alpha)
         
         print(f"Evaluation finished. CSV Results saved.")
-        
-        # --- Visualization of Extremes ---
-        if save_top_k > 0:
-            vis_dir = os.path.join(os.path.dirname(output_path), "visualizations")
-            self.save_extremes(pair_results, vis_dir, k=save_top_k)
-
         return output_path
 
     def _process_pair(self, pair, writer, alpha):
@@ -192,10 +184,6 @@ class PCKEvaluator:
         # Logging to CSV & Accumulating Pair Stats
         category = pair.get('category', 'unknown')
         
-        # Stats accumulators for visualization ranking
-        pair_correct_count = 0
-        pair_visible_count = 0
-
         num_kps = correct_mask_global.shape[0]
         for k in range(num_kps):
             is_visible = visibility_mask[k].item()
@@ -207,30 +195,6 @@ class PCKEvaluator:
                     pair_id, src_name, trg_name, category, k, int(is_visible),
                     int(is_correct_g), int(is_correct_w)
                 ])
-                
-                # For visualization ranking, we primarily use the Window method score
-                pair_visible_count += 1
-                if is_correct_w:
-                    pair_correct_count += 1
-
-        # --- Store Pair Results for Best/Worst Analysis ---
-        if pair_visible_count > 0:
-            # Compute overall PCK score for this pair
-            pck_score = pair_correct_count / pair_visible_count
-            
-            # Get source bbox
-            curr_src_bbox = pair['src_bndbox']
-            
-            return {
-                'src_path': src_name,
-                'trg_path': trg_name,
-                'src_kps': src_kps.numpy(),
-                'trg_kps': trg_kps.numpy(),
-                'pred_kps': pred_window_orig.numpy(), # Using Window prediction for vis
-                'pck': pck_score,
-                'src_bbox': curr_src_bbox.numpy(),
-                'trg_bbox': trg_bbox.numpy()
-            }
 
     def process_results(csv_path, save_dir):
         """
@@ -315,33 +279,6 @@ class PCKEvaluator:
 
         print_summary()
         print_by_category()
-
-    def save_extremes(self, pair_results, save_dir, k=5):
-        """
-        Sorts tracked results and visualizes Top K and Bottom K image pairs.
-        """
-
-        print(f"Generating visualizations for Top {k} and Bottom {k} results...")
-        os.makedirs(os.path.join(save_dir, 'best'), exist_ok=True)
-        os.makedirs(os.path.join(save_dir, 'worst'), exist_ok=True)
-
-        # Sort by PCK score (descending)
-        sorted_res = sorted(pair_results, key=lambda x: x['pck'], reverse=True)
-
-        best_pairs = sorted_res[:k]
-        worst_pairs = sorted_res[-k:]
-
-        for i, res in enumerate(best_pairs):
-            filename = f"rank{i+1}_best_pck{res['pck']:.2f}.png"
-            self._plot_pair(res, os.path.join(save_dir, 'best', filename))
-
-        for i, res in enumerate(worst_pairs):
-            # Reverse rank index for worst (rank 1 = absolute worst)
-            rank = len(sorted_res) - (len(worst_pairs) - 1 - i)
-            filename = f"rank{rank}_worst_pck{res['pck']:.2f}.png"
-            self._plot_pair(res, os.path.join(save_dir, 'worst', filename))
-        
-        print(f"Visualizations saved to {save_dir}")
 
     def _plot_pair(self, res, save_path):
         """
