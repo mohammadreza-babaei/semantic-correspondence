@@ -136,26 +136,22 @@ class PCKEvaluator:
         and accumulating data for visualization.
         """
         # 1. Unpack Metadata
-        src_names = batch['src_name']
-        trg_names = batch['trg_name']
-        src_kps_raw = batch['src_kps']   # (B, N, 2)
-        trg_kps_raw = batch['trg_kps']   # (B, N, 2)
-        trg_bbox = batch['trg_bndbox']   # (B, 4)
+        src_name = batch['src_name']
+        trg_name = batch['trg_name']
+        src_kps_raw = batch['src_kps'] 
+        trg_kps_raw = batch['trg_kps']
+        trg_bbox = batch['trg_bndbox']
         
-        B = len(src_names) if isinstance(src_names, list) else 1
+        B = 1
         
         for i in range(B):
-            s_name = src_names[i] if B > 1 else src_names
-            t_name = trg_names[i] if B > 1 else trg_names
+            s_name = src_name
+            t_name = trg_name
             
             # Use trainer's helper for feature loading (with error handling)
-            try:
-                feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
-                    s_name, t_name, requires_grad=False
-                )
-            except RuntimeError:
-                print(f"Warning: Cache file missing for {s_name} or {t_name}. Skipping.")
-                continue
+            feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
+                s_name, t_name, requires_grad=False
+            )
             
             trg_orig_w, trg_orig_h = trg_orig_size
             src_orig_w, src_orig_h = src_orig_size
@@ -186,9 +182,9 @@ class PCKEvaluator:
             pred_window_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
             
             # Get ground truth keypoints and bounding box
-            curr_trg_kps = trg_kps_raw[i] if B > 1 else trg_kps_raw
+            curr_trg_kps = trg_kps_raw
             
-            curr_bbox = trg_bbox[i] if B > 1 else trg_bbox
+            curr_bbox = trg_bbox
             
             # Compute visibility mask
             visibility_mask = (curr_trg_kps[:, 0] > 0) & (curr_trg_kps[:, 1] > 0)
@@ -215,8 +211,7 @@ class PCKEvaluator:
             threshold = alpha * bbox_size
             
             # Logging to CSV & Accumulating Pair Stats
-            category = batch['category'][i] if (B > 1 and 'category' in batch) else batch.get('category', 'unknown')
-            if isinstance(category, list): category = category[0]
+            category = batch.get('category', 'unknown')
             
             # Stats accumulators for visualization ranking
             pair_correct_count = 0
