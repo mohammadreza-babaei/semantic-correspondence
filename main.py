@@ -70,8 +70,7 @@ def main():
                                   choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 
                                            'dinov3_vits16',
                                            'sam_vit_b', 'sam_vit_l', 'sam_vit_h',
-                                           'tiny_vit',
-                                           'tiny_sam'],
+                                           'tiny_vit', 'tinysam_vit_t', 'tinysam'],
                                   help="Model variant to use (DINOv2, DINOv3, or SAM)")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
@@ -128,6 +127,8 @@ def main():
                                   help="Disable saving checkpoints during training")
     fine_tune_parser.add_argument("--temperature", type=float, default=0.02,
                                   help="Temperature for softmax during inference (default: 0.02)")
+    fine_tune_parser.add_argument("--resolution", type=int, default=None,
+                                  help="Force specific input resolution (e.g. 1024 for TinySAM)")
     
     eval_parser = subparsers.add_parser("eval", help="Evaluate the model")
 
@@ -152,6 +153,8 @@ def main():
                              help="Window size for local refinement in window-based prediction (default: 5)")
     eval_parser.add_argument("--temperature", type=float, default=0.02,
                              help="Temperature for softmax during inference (default: 0.02)")
+    eval_parser.add_argument("--resolution", type=int, default=None,
+                             help="Force specific input resolution (e.g. 1024 for TinySAM)")
     
     # Mixed Model arguments
     eval_parser.add_argument("--mix-model-name", type=str, default=None,
@@ -168,8 +171,8 @@ def main():
         model_type = "dinov2"
     elif "dinov3" in args.model_name:
         model_type = "dinov3"
-    elif "tiny_sam" in args.model_name:
-        model_type = "tiny_sam"
+    elif "tinysam" in args.model_name:
+        model_type = "tinysam"
     elif "sam" in args.model_name:
         model_type = "sam"
     elif "tiny_vit" in args.model_name:
@@ -266,17 +269,17 @@ def fine_tune(args, model_type):
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
         )
-    elif model_type == 'tiny_sam':
+    elif model_type == 'tinysam':
         fine_tuner = TinySAMAdapter(
-            model_name=args.model_name,
+            model_name='vit_t',
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks,
             dropout=args.dropout,
-            unfreeze_neck=args.unfreeze_neck,
             use_lora=args.use_lora,
             lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
+            lora_alpha=args.lora_alpha,
+            resolution=args.resolution
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -346,12 +349,48 @@ def evaluate(args):
     eval_dataset = SPair71kPairs(root=dataset_path, split=args.split)
     
     # 2. Initialize Adapter
-    # IMPORTANT: Initialize with weights_path=None. 
-    # We do NOT want to load the base weights here; we will overwrite them 
-    # with the fine-tuned checkpoint in step 3.
-    
-    print("Initializing architecture...")
     adapter1 = create_eval_adapter(args.model_name, args.weights_path, args, device)
+
+    print("Initializing architecture...")
+    if "dinov2" in args.model_name:
+        adapter = DINOv2Adapter(
+            model_name=args.model_name,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=args.weights_path
+        )
+    elif "dinov3" in args.model_name:
+        adapter = DINOv3Adapter(
+            model_name=args.model_name,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=args.weights_path
+        )
+    elif "tinysam" in args.model_name:
+        adapter = TinySAMAdapter(
+            model_name='vit_t',
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=args.weights_path,
+            resolution=args.resolution
+        )
+    elif "sam" in args.model_name:
+        adapter = SAMAdapter(
+            model_name=args.model_name.replace("sam_", ""),
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=args.weights_path,
+            unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
+        )
+    elif "tiny_vit" in args.model_name:
+        adapter = TinyViTAdapter(
+            model_name='tiny_vit_21m_512.dist_in22k_ft_in1k', 
+            weights_path=args.weights_path,
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks
+        )
+    else:
+        raise ValueError(f"Unknown model: {args.model_name}")
     
     if args.mix_model_name:
         print(f"Initializing second model for mixing: {args.mix_model_name}")

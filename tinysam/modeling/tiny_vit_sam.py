@@ -8,13 +8,13 @@
 # --------------------------------------------------------
 
 import itertools
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
-from timm.models.layers import DropPath as TimmDropPath,\
-    to_2tuple, trunc_normal_
-from timm.models.registry import register_model
+from timm.layers import DropPath as TimmDropPath, to_2tuple, trunc_normal_
+from timm.models import register_model
 from typing import Tuple
 
 
@@ -607,8 +607,10 @@ class TinyViT(nn.Module):
         for i in range(start_i, len(self.layers)):
             layer = self.layers[i]
             x = layer(x)
-        B,_,C=x.size()
-        x = x.view(B, 64, 64, C)
+        B, L, C = x.size()
+        H = int(L**0.5)
+        W = H
+        x = x.view(B, H, W, C)
         x=x.permute(0, 3, 1, 2)
         x=self.neck(x)
         return x
@@ -647,13 +649,15 @@ def register_tiny_vit_model(fn):
                 url=url,
                 map_location='cpu', check_hash=False,
             )
-            model.load_state_dict(checkpoint['model'])
+            model.load_state_dict(checkpoint['model'], strict=False)
 
         return model
 
     # rename the name of fn_wrapper
     fn_wrapper.__name__ = fn.__name__
-    return register_model(fn_wrapper)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Overwriting")
+        return register_model(fn_wrapper)
 
 
 @register_tiny_vit_model

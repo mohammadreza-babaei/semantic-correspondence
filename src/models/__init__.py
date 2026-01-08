@@ -3,4 +3,3 @@ from src.models.dinov3 import DINOv3Adapter
 from src.models.sam import SAMAdapter
 from src.models.tiny_vit import TinyViTAdapter
 from src.models.tiny_sam import TinySAMAdapter
-from src.models.mixed import MixedModelAdapter
