@@ -131,7 +131,10 @@ class TinyViTAdapter:
         x = intermediate_features.to(self.device)
         
         features_list = self.model(x)
-        last_feat = features_list[-1]
+        if isinstance(features_list, (list, tuple)):
+            last_feat = features_list[-1]
+        else:
+            last_feat = features_list
         
         target_dim = self.standard_size // 16 
         if last_feat.shape[-1] != target_dim:

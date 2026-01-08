@@ -607,8 +607,10 @@ class TinyViT(nn.Module):
         for i in range(start_i, len(self.layers)):
             layer = self.layers[i]
             x = layer(x)
-        B,_,C=x.size()
-        x = x.view(B, 64, 64, C)
+        B, L, C = x.size()
+        H = int(L**0.5)
+        W = H
+        x = x.view(B, H, W, C)
         x=x.permute(0, 3, 1, 2)
         x=self.neck(x)
         return x
@@ -647,7 +649,7 @@ def register_tiny_vit_model(fn):
                 url=url,
                 map_location='cpu', check_hash=False,
             )
-            model.load_state_dict(checkpoint['model'])
+            model.load_state_dict(checkpoint['model'], strict=False)
 
         return model
 
