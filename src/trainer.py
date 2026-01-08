@@ -118,14 +118,20 @@ class Trainer():
         src_data = self.cached_dataset.load_features(src_name, aug_idx=aug_idx_src)
         trg_data = self.cached_dataset.load_features(trg_name, aug_idx=aug_idx_trg)
         
-        src_intermediate = src_data['intermediate'].to(self.device)
-        trg_intermediate = trg_data['intermediate'].to(self.device)
-        
-        # Handle batch dimension
-        if src_intermediate.dim() == 2:
-            src_intermediate = src_intermediate.unsqueeze(0)
-        if trg_intermediate.dim() == 2:
-            trg_intermediate = trg_intermediate.unsqueeze(0)
+        # Helper to recursively move to device and unsqueeze 2D tensors
+        def process_feat(feat):
+            if isinstance(feat, dict):
+                return {k: process_feat(v) for k, v in feat.items()}
+            elif isinstance(feat, (list, tuple)):
+                return type(feat)(process_feat(v) for v in feat)
+            else:
+                f = feat.to(self.device)
+                if f.dim() == 2:
+                    f = f.unsqueeze(0)
+                return f
+
+        src_intermediate = process_feat(src_data['intermediate'])
+        trg_intermediate = process_feat(trg_data['intermediate'])
         
         if requires_grad:
             feat1 = self.model.forward_unfrozen_blocks(src_intermediate)
