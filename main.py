@@ -115,12 +115,12 @@ def main():
         model_type = "dinov2"
     elif "dinov3" in args.model_name:
         model_type = "dinov3"
+    elif "tinysam" in args.model_name:
+        model_type = "tinysam"
     elif "sam" in args.model_name:
         model_type = "sam"
     elif "tiny_vit" in args.model_name:
         model_type = "tiny_vit"
-    elif "tinysam" in args.model_name:
-        model_type = "tinysam"
     else:
         # Fallback or error, though choices constraint handles most valid cases
         if "dino" in args.model_name:
