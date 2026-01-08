@@ -22,7 +22,7 @@ def main():
                                   choices=['dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', 'dinov2_vitg14', 
                                            'dinov3_vits16',
                                            'sam_vit_b', 'sam_vit_l', 'sam_vit_h',
-                                           'tiny_vit', 'tinysam_vit_t'],
+                                           'tiny_vit', 'tinysam_vit_t', 'tinysam'],
                                   help="Model variant to use (DINOv2, DINOv3, or SAM)")
     fine_tune_parser.add_argument("--num-unfrozen-blocks", type=int, default=2,
                                   help="Number of transformer blocks to unfreeze (from the end)")
