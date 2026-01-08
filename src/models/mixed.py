@@ -4,16 +4,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class MixedModelAdapter:
-    def __init__(self, adapter1, adapter2):
+    def __init__(self, adapter1, adapter2, mix_weights=None):
         """
         Adapter that runs two models in parallel and concatenates their features.
         
         Args:
             adapter1: First model adapter (output size determines primary grid)
             adapter2: Second model adapter
+            mix_weights: Optional list/tuple of weights [w1, w2] for the features
         """
         self.adapter1 = adapter1
         self.adapter2 = adapter2
+        self.mix_weights = mix_weights
         self.device = adapter1.device
         self.model_name = f"mixed_{adapter1.model_name}_{adapter2.model_name}"
         
@@ -93,6 +95,11 @@ class MixedModelAdapter:
         # Normalize features before combining to ensure equal contribution
         out1 = F.normalize(out1, p=2, dim=1)
         out2 = F.normalize(out2, p=2, dim=1)
+        
+        # Apply mixing weights if configured
+        if self.mix_weights is not None:
+            out1 = out1 * self.mix_weights[0]
+            out2 = out2 * self.mix_weights[1]
             
         # Concatenate along channel dimension
         return torch.cat([out1, out2], dim=1)

@@ -145,6 +145,8 @@ def main():
                              help="Second model to mix with (for evaluation only)")
     eval_parser.add_argument("--mix-weights-path", type=str, default=None,
                              help="Weights for the second model")
+    eval_parser.add_argument("--mix-weights", type=str, default=None,
+                             help="Weights for mixing the two models (e.g., '1.0,1.0')")
     
     args = parser.parse_args()
 
@@ -329,7 +331,19 @@ def evaluate(args):
     if args.mix_model_name:
         print(f"Initializing second model for mixing: {args.mix_model_name}")
         adapter2 = create_eval_adapter(args.mix_model_name, args.mix_weights_path, args, device)
-        adapter = MixedModelAdapter(adapter1, adapter2)
+        
+        mix_weights = None
+        if args.mix_weights:
+            try:
+                mix_weights = [float(w) for w in args.mix_weights.split(',')]
+                if len(mix_weights) != 2:
+                    raise ValueError("mix-weights must have exactly two values")
+                print(f"Using mixing weights: {mix_weights}")
+            except ValueError as e:
+                print(f"Error parsing mix-weights: {e}")
+                raise
+                
+        adapter = MixedModelAdapter(adapter1, adapter2, mix_weights=mix_weights)
         print(f"Created MixedModelAdapter: {adapter.model_name}")
     else:
         adapter = adapter1
