@@ -312,6 +312,14 @@ def evaluate(args):
             num_unfrozen_blocks=args.num_unfrozen_blocks,
             weights_path=args.weights_path
         )
+    elif "tinysam" in args.model_name:
+        adapter = TinySAMAdapter(
+            model_name='vit_t',
+            device=device,
+            num_unfrozen_blocks=args.num_unfrozen_blocks,
+            weights_path=args.weights_path,
+            resolution=args.resolution
+        )
     elif "sam" in args.model_name:
         adapter = SAMAdapter(
             model_name=args.model_name.replace("sam_", ""),
@@ -326,14 +334,6 @@ def evaluate(args):
             weights_path=args.weights_path,
             device=device,
             num_unfrozen_blocks=args.num_unfrozen_blocks
-        )
-    elif "tinysam" in args.model_name:
-        adapter = TinySAMAdapter(
-            model_name='vit_t',
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path,
-            resolution=args.resolution
         )
     else:
         raise ValueError(f"Unknown model: {args.model_name}")
