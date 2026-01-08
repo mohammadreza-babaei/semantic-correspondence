@@ -61,7 +61,7 @@ from src.plotting import plot_block_weights, compute_pca, plot_pca_features
 
 from src.models import SAMAdapter, DINOv2Adapter, DINOv3Adapter
 from src.spair_dataset import SPair71kPairs
-from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
+from src.new_loss import predict_keypoints, denormalize_predictions
 from src.pck import compute_pck
 
 
@@ -163,7 +163,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def evaluate_single_block(model, dataset, block_idx, alpha, standard_size, device, num_samples=None, visualize=False, sample_indices=None, output_dir=None):
+def evaluate_single_block(model, dataset, block_idx, alphas, standard_size, device, num_samples=None, visualize=False, sample_indices=None, output_dir=None):
     """
     Evaluate PCK for features extracted through a specific block depth.
     Uses cumulative extraction (blocks 0 through block_idx).
@@ -172,7 +172,7 @@ def evaluate_single_block(model, dataset, block_idx, alpha, standard_size, devic
         model: SAMAdapter instance
         dataset: Dataset for evaluation pairs
         block_idx: Block index to evaluate through (inclusive)
-        alpha: PCK threshold
+        alphas: List of PCK thresholds to evaluate
         standard_size: Image size for feature extraction
         device: torch device
         num_samples: Optional limit on number of samples
@@ -187,12 +187,8 @@ def evaluate_single_block(model, dataset, block_idx, alpha, standard_size, devic
     
     print(f"Evaluating through Block {block_idx} (cumulative: blocks 0-{block_idx})...")
     
-    results = {
-        'pck_global_samples': [],
-        'pck_window_samples': [],
-        'errors_global': [],
-        'errors_window': []
-    }
+    # Initialize results for each alpha
+    results = {f'pck_global_samples_alpha_{alpha}': [] for alpha in alphas}
     
     # Visualizing Weights Values 
     if visualize and output_dir:
@@ -281,95 +277,73 @@ def evaluate_single_block(model, dataset, block_idx, alpha, standard_size, devic
         src_input = src_kps.to(device).unsqueeze(0)
 
         
-        # Predict keypoints (both methods)
+        # Predict keypoints
         with torch.no_grad():
             pred_global_norm = predict_keypoints(
                 feat1, feat2, src_input,
                 src_img_size=(standard_size, standard_size),
-                temperature=0.1
-            )
-            pred_window_norm = predict_keypoints_window(
-                feat1, feat2, src_input,
-                src_img_size=(standard_size, standard_size),
-                temperature=0.1
+                temperature=0.00001
             )
         
         # Denormalize predictions to original target image size
         pred_global_orig = denormalize_predictions(pred_global_norm, (trg_w, trg_h)).squeeze(0).cpu()
-        pred_window_orig = denormalize_predictions(pred_window_norm, (trg_w, trg_h)).squeeze(0).cpu()
 
         
-        # Compute PCK using compute_pck
+        # Compute PCK using compute_pck for each alpha
         trg_kps = trg_kps_raw.float()
         valid_mask = (trg_kps[:, 0] > 0) & (trg_kps[:, 1] > 0)
         
-        pck_global, _ = compute_pck(
-            pred_global_orig, trg_kps, trg_bbox, alpha, valid_mask
-        )
-        pck_window, _ = compute_pck(
-            pred_window_orig, trg_kps, trg_bbox, alpha, valid_mask
-        )
-        
-        if valid_mask.sum() > 0:
-            dist_global = torch.norm(pred_global_orig - trg_kps, dim=-1)
-            dist_window = torch.norm(pred_window_orig - trg_kps, dim=-1)
-            err_global = dist_global[valid_mask].mean().item()
-            err_window = dist_window[valid_mask].mean().item()
-            
-            results['pck_global_samples'].append(pck_global)
-            results['pck_window_samples'].append(pck_window)
-            results['errors_global'].append(err_global)
-            results['errors_window'].append(err_window)
+        for alpha in alphas:
+            pck_global, _ = compute_pck(
+                pred_global_orig, trg_kps, trg_bbox, alpha, valid_mask
+            )
+            results[f'pck_global_samples_alpha_{alpha}'].append(pck_global)
     
-    # Aggregate results
-    results['pck_global_mean'] = np.mean(results['pck_global_samples']) if results['pck_global_samples'] else 0.0
-    results['pck_window_mean'] = np.mean(results['pck_window_samples']) if results['pck_window_samples'] else 0.0
-    results['error_global_mean'] = np.mean(results['errors_global']) if results['errors_global'] else 0.0
-    results['error_window_mean'] = np.mean(results['errors_window']) if results['errors_window'] else 0.0
-    results['num_samples'] = len(results['pck_global_samples'])
+    # Aggregate results for each alpha
+    for alpha in alphas:
+        key = f'pck_global_samples_alpha_{alpha}'
+        results[f'pck_global_mean_alpha_{alpha}'] = np.mean(results[key]) if results[key] else 0.0
+    
+    # Get num_samples from any alpha (they're all the same)
+    first_key = f'pck_global_samples_alpha_{alphas[0]}'
+    results['num_samples'] = len(results[first_key])
     
     return results
 
 
-def plot_block_comparison(results_df, save_path):
+def plot_block_comparison(results_df, alphas, save_path):
     """
-    Create visualization comparing PCK across different block depths.
+    Create visualization comparing PCK across different block depths for multiple alpha values.
     
     Args:
-        results_df: DataFrame with columns ['block_idx', 'pck_global', 'pck_window', 'error']
+        results_df: DataFrame with columns ['block_idx', 'pck_global_alpha_{alpha}'] for each alpha
+        alphas: List of alpha values to plot
         save_path: Output path for the plot
     """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
-    # Plot 1: PCK scores
-    ax1.plot(results_df['block_idx'], results_df['pck_global'], 
-             marker='o', label='Global PCK', linewidth=2, markersize=8)
-    ax1.plot(results_df['block_idx'], results_df['pck_window'], 
-             marker='s', label='Window PCK', linewidth=2, markersize=8)
-    ax1.set_xlabel('Block Index', fontsize=12)
-    ax1.set_ylabel('PCK (%)', fontsize=12)
-    ax1.set_title('PCK Performance Across Block Depths', fontsize=14, fontweight='bold')
-    ax1.legend(fontsize=10)
-    ax1.grid(True, alpha=0.3)
-    ax1.set_ylim(0, 1)
+    # Colors and markers for different alphas
+    colors = ['#2E86AB', '#A23B72', '#F18F01']  # Blue, Purple, Orange
+    markers = ['o', 's', '^']
     
-    # Highlight best performing block
-    best_idx = results_df['pck_window'].idxmax()
-    best_block = results_df.loc[best_idx, 'block_idx']
-    best_pck = results_df.loc[best_idx, 'pck_window']
-    ax1.axvline(x=best_block, color='green', linestyle='--', alpha=0.5, label=f'Best: Block {best_block}')
-    ax1.legend(fontsize=10)
+    # Plot PCK scores for each alpha
+    for i, alpha in enumerate(alphas):
+        column_name = f'pck_global_alpha_{alpha}'
+        ax.plot(results_df['block_idx'], results_df[column_name], 
+                marker=markers[i], label=f'PCK α={alpha}', 
+                linewidth=2, markersize=8, color=colors[i])
+        
+        # Highlight best performing block for this alpha
+        best_idx = results_df[column_name].idxmax()
+        best_block = results_df.loc[best_idx, 'block_idx']
+        ax.axvline(x=best_block, color=colors[i], linestyle='--', alpha=0.3)
     
-    # Plot 2: Average error
-    ax2.plot(results_df['block_idx'], results_df['error_global'], 
-             marker='o', label='Global Error', linewidth=2, markersize=8, color='coral')
-    ax2.plot(results_df['block_idx'], results_df['error_window'], 
-             marker='s', label='Window Error', linewidth=2, markersize=8, color='lightblue')
-    ax2.set_xlabel('Block Index', fontsize=12)
-    ax2.set_ylabel('Average Error (pixels)', fontsize=12)
-    ax2.set_title('Prediction Error Across Block Depths', fontsize=14, fontweight='bold')
-    ax2.legend(fontsize=10)
-    ax2.grid(True, alpha=0.3)
+    ax.set_xlabel('Block Index', fontsize=12)
+    ax.set_ylabel('PCK (%)', fontsize=12)
+    ax.set_title('PCK Performance Across Block Depths', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 1)
     
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -449,6 +423,10 @@ def main():
         else:
             print(f"Visualization enabled for {len(sample_indices)} samples: {sample_indices}")
     
+    # Define alpha values to evaluate
+    alphas = [0.1, 0.05, 0.01]
+    print(f"Evaluating PCK at alpha values: {alphas}")
+    
     # Run block-wise evaluation
     print(f"\n{'='*60}")
     print(f"BLOCK-WISE PCK EVALUATION")
@@ -460,25 +438,22 @@ def main():
     for block_idx in block_range:
         result = evaluate_single_block(
             model, dataset, block_idx, 
-            args.alpha, model.standard_size, device,
+            alphas, model.standard_size, device,
             num_samples=args.num_samples,
             visualize=args.visualize,
             sample_indices=sample_indices,
             output_dir=args.output_dir
         )
-            
-        all_results.append({
-            'block_idx': block_idx,
-            'pck_global': result['pck_global_mean'],
-            'pck_window': result['pck_window_mean'],
-            'error_global': result['error_global_mean'],
-            'error_window': result['error_window_mean'],
-            'num_samples': result['num_samples']
-        })
-            
-        print(f"Block {block_idx}: PCK-Window={result['pck_window_mean']:.2%}, "
-              f"PCK-Global={result['pck_global_mean']:.2%}, "
-              f"Error={result['error_window_mean']:.2f}px")
+        
+        # Collect results for each alpha
+        result_dict = {'block_idx': block_idx, 'num_samples': result['num_samples']}
+        for alpha in alphas:
+            result_dict[f'pck_global_alpha_{alpha}'] = result[f'pck_global_mean_alpha_{alpha}']
+        all_results.append(result_dict)
+        
+        # Print results for all alphas
+        pck_str = ", ".join([f"α={alpha}: {result[f'pck_global_mean_alpha_{alpha}']:.2%}" for alpha in alphas])
+        print(f"Block {block_idx}: {pck_str}")
     
     # Save results to CSV
     results_df = pd.DataFrame(all_results)
@@ -488,20 +463,21 @@ def main():
     
     # Generate visualization
     plot_path = os.path.join(args.output_dir, 'block_comparison.png')
-    plot_block_comparison(results_df, plot_path)
+    plot_block_comparison(results_df, alphas, plot_path)
     
     # Print summary
     print(f"\n{'='*60}")
     print(f"SUMMARY")
     print(f"{'='*60}")
-    best_idx = results_df['pck_window'].idxmax()
-    best_block = results_df.loc[best_idx, 'block_idx']
-    best_pck_win = results_df.loc[best_idx, 'pck_window']
-    best_pck_glob = results_df.loc[best_idx, 'pck_global']
     
-    print(f"Best Block Depth: {best_block} (processed blocks 0-{best_block})")
-    print(f"  - PCK Window: {best_pck_win:.2%}")
-    print(f"  - PCK Global: {best_pck_glob:.2%}")
+    # Show best block for each alpha
+    for alpha in alphas:
+        col_name = f'pck_global_alpha_{alpha}'
+        best_idx = results_df[col_name].idxmax()
+        best_block = results_df.loc[best_idx, 'block_idx']
+        best_pck = results_df.loc[best_idx, col_name]
+        print(f"Best for α={alpha}: Block {best_block} with PCK={best_pck:.2%}")
+    
     print(f"{'='*60}\n")
     
     print(f"All results saved to: {args.output_dir}")
