@@ -235,10 +235,18 @@ class CachedFeaturesDataset(Dataset):
         # Extract INTERMEDIATE features (output of frozen blocks)
         with torch.no_grad():
             intermediate = self.model.extract_intermediate_features(img_tensor)
-        
+            
+        def to_cpu(feat):
+             if isinstance(feat, dict):
+                 return {k: to_cpu(v) for k, v in feat.items()}
+             elif isinstance(feat, (list, tuple)):
+                 return type(feat)(to_cpu(v) for v in feat)
+             else:
+                 return feat.cpu()
+
         # Prepare feature data
         feature_data = {
-            'intermediate': intermediate.cpu(),
+            'intermediate': to_cpu(intermediate),
             'orig_size': (orig_w, orig_h),
         }
         
