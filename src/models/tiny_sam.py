@@ -8,7 +8,6 @@ import os
 from .checkpoint_utils import load_weights, extract_state_dict, clean_state_dict_keys, get_merged_state_dict
 from src.lora_utils import apply_lora
 
-# Try to import TinySAM. If not installed, raise clear error.
 try:
     from tinysam import sam_model_registry
 except ImportError:
@@ -17,8 +16,7 @@ except ImportError:
     print("And ensure the 'tinysam' folder is in your project root.")
     sam_model_registry = None
 
-# TinySAM native resolution is 1024, but for correspondence 512 is often sufficient/faster.
-# Matches your other adapters.
+# TinySAM native resolution is 1024
 STANDARD_SIZE = 1024
 
 class TinySAMAdapter:
@@ -36,7 +34,7 @@ class TinySAMAdapter:
         resolution=None
     ):
         """
-        Initializes the TinySAM model (XinghaoChen implementation).
+        Initializes the TinySAM model
         
         Args:
             model_name (str): Usually 'vit_t' for TinySAM.
@@ -57,14 +55,13 @@ class TinySAMAdapter:
         print(f"Loading TinySAM {model_name} on {self.device}...")
         
         # 1. Load Model
-        # We pass checkpoint=None to avoid loading inside the registry (we handle it below)
         if resolution is not None:
              self.sam_model = sam_model_registry[model_name](checkpoint=None, image_size=resolution)
         else:
              self.sam_model = sam_model_registry[model_name](checkpoint=None)
         self.model = self.sam_model.image_encoder
         
-        # 2. Load Weights Manually (Robust Loading)
+        # 2. Load Weights Manually
         if weights_path is not None:
             if os.path.exists(weights_path):
                 load_weights(
@@ -80,7 +77,7 @@ class TinySAMAdapter:
         self.sam_model.to(self.device)
         self.sam_model.eval()
         
-        # 3. Analyze Backbone Structure (TinyViT Hierarchy)
+        # 3. Analyze Backbone Structure 
         # TinyViT has 'layers' (stages), each having 'blocks'.
         # We need to flatten this conceptually to decide what to freeze.
         self.stages = self.model.layers
@@ -187,13 +184,13 @@ class TinySAMAdapter:
                 # A stage contains a list of blocks
                 stage_blocks = stage.blocks
                 
-                # Check if we should run this whole stage (all frozen)
+                # Check if we should run this whole stage
                 if blocks_processed + len(stage_blocks) <= self.num_frozen_blocks:
                     # Run full stage
                     x = stage(x)
                     blocks_processed += len(stage_blocks)
                 else:
-                    # We are in the split stage. Run only the frozen blocks within this stage.
+                 # We are in the split stage. Run only the frozen blocks within this stage.
                     
                     # Run remaining frozen blocks individually
                     for block in stage_blocks:
@@ -201,11 +198,7 @@ class TinySAMAdapter:
                             x = block(x)
                             blocks_processed += 1
                         else:
-                            break # Stop exactly at the cut-off
-                    
-                    # We stop here. 'x' is now the input to the first Unfrozen block.
-                    # We DO NOT run downsample here, because in TinyViT downsample is at the END.
-                    # It will be run in forward_unfrozen_blocks after the remaining blocks.
+                            break 
                     break
                     
             return x
@@ -224,15 +217,12 @@ class TinySAMAdapter:
 
         blocks_processed = self.num_frozen_blocks
         
-        # Resume iteration from where we left off
-        # We need to find the stage where we stopped
         current_block_count = 0
         
         for stage in self.model.layers:
             stage_blocks = stage.blocks
             n_blocks = len(stage_blocks)
             
-            # If we fully processed this stage in extract(), skip it
             if current_block_count + n_blocks <= self.num_frozen_blocks:
                 current_block_count += n_blocks
                 continue
