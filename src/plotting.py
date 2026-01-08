@@ -317,6 +317,30 @@ def compare_models_pca(models, src_img_path, trg_img_path, save_path=None, model
              feat2 = model.forward_unfrozen_blocks(trg_intermediate)
              
              pca1, pca2 = compute_pca(feat1, feat2)
+             
+             # Check if center is darker than corners in the source image
+             # Convert to grayscale for brightness check
+             pca1_gray = pca1.mean(axis=2)
+             H, W = pca1_gray.shape
+             
+             # Define center region (middle 50%)
+             center_roi = pca1_gray[H//4 : 3*H//4, W//4 : 3*W//4]
+             avg_center = center_roi.mean()
+             
+             # Define corner regions (outer 10%)
+             h_margin = max(1, H // 10)
+             w_margin = max(1, W // 10)
+             
+             tl = pca1_gray[:h_margin, :w_margin]
+             tr = pca1_gray[:h_margin, -w_margin:]
+             bl = pca1_gray[-h_margin:, :w_margin]
+             br = pca1_gray[-h_margin:, -w_margin:]
+             
+             avg_corners = (tl.mean() + tr.mean() + bl.mean() + br.mean()) / 4.0
+             
+             if avg_center < avg_corners:
+                 pca1 = 1.0 - pca1
+                 pca2 = 1.0 - pca2
         
         axes[0, col].imshow(pca1, interpolation='nearest')
         axes[0, col].set_title(f"{model_name}\n(Source)")
