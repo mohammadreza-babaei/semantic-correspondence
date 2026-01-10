@@ -73,7 +73,7 @@ Main command for training models.
 #### General & Model
 | Argument | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--model-name` | str | `dinov2_vits14` | Model variant (`dinov2_vits14`, `dinov2_vitb14`, `dinov3_vits16`, `sam_vit_b`, `tiny_vit` etc.) |
+| `--model-name` | str | `dinov2_vits14` | Model variant (`dinov2_vits14`, `dinov2_vitb14`, `dinov3_vits16`, `sam_vit_b`, `sam_vit_l`, `sam_vit_h`, `tiny_vit`, `tinysam` etc.) |
 | `--dataset-path` | str | `./data` | Path to SPair-71k dataset |
 | `--weights-path` | str | `None` | Path to custom weights (.pth/.safetensors) |
 | `--save-path` | str | `None` | Directory to save checkpoints |
@@ -93,6 +93,8 @@ Main command for training models.
 | `--accumulation-steps`| int | `1` | Steps to accumulate gradients |
 | `--num-augmentations` | int | `0` | Augmented versions to cache per image |
 | `--no-shuffle` | flag | `False` | Disable dataset shuffling |
+| `--temperature` | float | `0.02` | Temperature for softmax |
+| `--resolution` | int | `None` | Force specific input resolution |
 
 #### LoRA & Optimization
 | Argument | Type | Default | Description |
@@ -127,6 +129,11 @@ Command for evaluating trained models.
 | `--plot-pair` | int | `None` | Visualize prediction for specific pair index |
 | `--num-unfrozen-blocks`| int | `2` | Must match training config |
 | `--unfreeze-neck` | flag | `False` | Must match training config (SAM only) |
+| `--temperature` | float | `0.02` | Temperature for softmax |
+| `--resolution` | int | `None` | Force specific input resolution |
+| `--mix-model-name` | str | `None` | Second model to mix with |
+| `--mix-weights-path` | str | `None` | Weights for the second model |
+| `--mix-weights` | str | `None` | Weights for mixing (e.g., '1.0,1.0') |
 
 ---
 
