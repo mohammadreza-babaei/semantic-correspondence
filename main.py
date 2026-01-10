@@ -149,8 +149,8 @@ def main():
                              help="Dataset split to evaluate on")
     eval_parser.add_argument("--plot-pair", type=int, default=None,
                              help="Print image bbased on index")
-    eval_parser.add_argument("--window-size", type=int, default=5,
-                             help="Window size for local refinement in window-based prediction (default: 5)")
+    eval_parser.add_argument("--window-size", type=str, default="5",
+                             help="Window size(s) for local refinement - comma-separated for multiple values (e.g., '5,7,9') (default: 5)")
     eval_parser.add_argument("--temperature", type=float, default=0.02,
                              help="Temperature for softmax during inference (default: 0.02)")
     eval_parser.add_argument("--resolution", type=int, default=None,
@@ -436,21 +436,25 @@ def evaluate(args):
 
     
     # 7. Run Evaluation
-    evaluator = PCKEvaluator(trainer=trainer, device=device, window_size=args.window_size, temperature=args.temperature)
+    # Parse window sizes from comma-separated string to list of ints
+    window_sizes = [int(w.strip()) for w in args.window_size.split(',')]
+    window_sizes_str = '_'.join([str(w) for w in window_sizes])
+    
+    evaluator = PCKEvaluator(trainer=trainer, device=device, window_sizes=window_sizes, temperature=args.temperature)
 
     if args.plot_pair is not None:
-        test_single_sample(trainer, device, eval_dataset, args.plot_pair, window_size=args.window_size)
+        test_single_sample(trainer, device, eval_dataset, args.plot_pair, window_size=window_sizes[0])
         return
     
     # Parse alpha values from comma-separated string to list of floats
     alphas = [float(a.strip()) for a in args.alpha.split(',')]
     alphas_str = '_'.join([str(a) for a in alphas])
     
-    results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha_{alphas_str}.csv"
+    results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha_{alphas_str}_ws_{window_sizes_str}.csv"
 
     # 8. Print Results
     print("\n")
-    print(f"Results for {args.split} with alpha values: {alphas}")
+    print(f"Results for {args.split} with alpha values: {alphas} and window sizes: {window_sizes}")
     evaluator.evaluate(eval_loader, results_file, alphas=alphas)
     PCKEvaluator.process_results(results_file, "evaluations/metrics")
     

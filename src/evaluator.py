@@ -13,13 +13,13 @@ from src.new_loss import predict_keypoints, predict_keypoints_window, denormaliz
 from src.pck import compute_pck, get_bbox_size, compute_pck_from_batch
 
 class PCKEvaluator:
-    def __init__(self, trainer, device, dataset=None, window_size=5, temperature=0.02):
+    def __init__(self, trainer, device, dataset=None, window_sizes=[5], temperature=0.02):
         """
         Args:
             trainer: The Trainer instance (holds .features_cache and .model).
             device: 'cuda' or 'cpu'.
             dataset: The dataset to evaluate (optional).
-            window_size: Size of the window for local refinement in predict_keypoints_window (default: 5).
+            window_sizes: List of window sizes for local refinement in predict_keypoints_window (default: [5]).
             temperature: Temperature for softmax during inference (default: 0.02).
         """
         self.trainer = trainer
@@ -27,7 +27,7 @@ class PCKEvaluator:
         self.device = device
         self.standard_size = self.model.standard_size
         self.dataset = dataset
-        self.window_size = window_size
+        self.window_sizes = window_sizes if isinstance(window_sizes, list) else [window_sizes]
         self.temperature = temperature
 
     def compute_metrics_with_sizes(self, feat1, feat2, src_kps_std, batch, trg_sizes, alpha=0.1):
@@ -47,11 +47,11 @@ class PCKEvaluator:
                 src_img_size=(self.standard_size, self.standard_size),
                 temperature=self.temperature
             )
-            # 2. Window Prediction
+            # 2. Window Prediction (use first window size for validation)
             pred_w_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
-                window_size=self.window_size,
+                window_size=self.window_sizes[0],
                 temperature=self.temperature
             )
 
@@ -106,7 +106,7 @@ class PCKEvaluator:
             # Detailed Header
             writer.writerow([
                 'pair_id', 'src_img', 'trg_img', 'category', 'kps_idx', 
-                'is_visible', 'alpha',
+                'is_visible', 'alpha', 'window_size',
                 'is_correct_global', 'is_correct_window'
             ])
 
@@ -144,58 +144,64 @@ class PCKEvaluator:
         src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
         src_input = src_kps_std.to(self.device).unsqueeze(0)
         
-        # Predict (Both Methods)
+        # Predict Global Method (computed once)
         pred_global_norm = predict_keypoints(
             feat1, feat2, src_input,
             src_img_size=(self.standard_size, self.standard_size),
             temperature=self.temperature
         )
-        pred_window_norm = predict_keypoints_window(
-            feat1, feat2, src_input,
-            src_img_size=(self.standard_size, self.standard_size),
-            window_size=self.window_size,
-            temperature=self.temperature
-        )
         
-        # Denormalize predictions using shared helper
+        # Denormalize global prediction
         pred_global_orig = denormalize_predictions(pred_global_norm, trg_orig_size).squeeze(0).cpu()
-        pred_window_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
         
         # Compute visibility mask
         visibility_mask = (trg_kps[:, 0] > 0) & (trg_kps[:, 1] > 0)
+        category = pair.get('category', 'unknown')
 
-        for alpha in alphas:
-            # Compute PCK scores using standardized functions
-            _, correct_mask_global = compute_pck(
-                pred_global_orig,
-                trg_kps,
-                trg_bbox,
-                alpha,
-                visibility_mask
+        # Loop over window sizes
+        for window_size in self.window_sizes:
+            # Predict Window Method (computed for each window size)
+            pred_window_norm = predict_keypoints_window(
+                feat1, feat2, src_input,
+                src_img_size=(self.standard_size, self.standard_size),
+                window_size=window_size,
+                temperature=self.temperature
             )
             
-            _, correct_mask_window = compute_pck(
-                pred_window_orig,
-                trg_kps,
-                trg_bbox,
-                alpha,
-                visibility_mask
-            )
+            # Denormalize window prediction
+            pred_window_orig = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
             
-            # Logging to CSV & Accumulating Pair Stats
-            category = pair.get('category', 'unknown')
-            
-            num_kps = correct_mask_global.shape[0]
-            for k in range(num_kps):
-                is_visible = visibility_mask[k].item()
-                is_correct_g = correct_mask_global[k].item()
-                is_correct_w = correct_mask_window[k].item()
+            # Loop over alpha values
+            for alpha in alphas:
+                # Compute PCK scores using standardized functions
+                _, correct_mask_global = compute_pck(
+                    pred_global_orig,
+                    trg_kps,
+                    trg_bbox,
+                    alpha,
+                    visibility_mask
+                )
                 
-                if is_visible:
-                    writer.writerow([
-                        pair_id, src_name, trg_name, category, k, int(is_visible), alpha,
-                        int(is_correct_g), int(is_correct_w)
-                    ])
+                _, correct_mask_window = compute_pck(
+                    pred_window_orig,
+                    trg_kps,
+                    trg_bbox,
+                    alpha,
+                    visibility_mask
+                )
+                
+                # Logging to CSV
+                num_kps = correct_mask_global.shape[0]
+                for k in range(num_kps):
+                    is_visible = visibility_mask[k].item()
+                    is_correct_g = correct_mask_global[k].item()
+                    is_correct_w = correct_mask_window[k].item()
+                    
+                    if is_visible:
+                        writer.writerow([
+                            pair_id, src_name, trg_name, category, k, int(is_visible), alpha, window_size,
+                            int(is_correct_g), int(is_correct_w)
+                        ])
 
     def process_results(csv_path, save_dir):
         """
@@ -213,88 +219,94 @@ class PCKEvaluator:
             df = df[df['is_visible'] == 1]
             print(f"Filtered invisible keypoints: {n_total} -> {len(df)}")
 
-        # Get unique alpha values and process results for each
+        # Get unique alpha and window_size values
         unique_alphas = sorted(df['alpha'].unique())
+        unique_window_sizes = sorted(df['window_size'].unique())
+        
         print(f"\nFound {len(unique_alphas)} alpha value(s): {unique_alphas}")
-
+        print(f"Found {len(unique_window_sizes)} window size(s): {unique_window_sizes}")
+        
+        # Iterate over all combinations of alpha and window_size
         for alpha_val in unique_alphas:
-            df_alpha = df[df['alpha'] == alpha_val]
-            print(f"\n{'='*105}")
-            print(f"RESULTS FOR ALPHA = {alpha_val}")
-            print(f"{'='*105}")
+            for window_size_val in unique_window_sizes:
+                # Filter dataframe by current alpha and window_size
+                df_subset = df[(df['alpha'] == alpha_val) & (df['window_size'] == window_size_val)]
+                
+                # Print header for this combination
+                print(f"\n{'='*105}")
+                print(f"RESULTS FOR ALPHA={alpha_val}, WINDOW_SIZE={window_size_val}")
+                print(f"{'='*105}")
+                alpha_suffix = f"_alpha_{alpha_val}_ws_{window_size_val}"
 
-            def print_summary(df_subset):
-                # 1. Global Metrics
-                pck_kps_g = df_subset['is_correct_global'].mean()
-                img_scores_g = df_subset.groupby(['pair_id', 'src_img'])['is_correct_global'].mean()
-                pck_img_g = img_scores_g.mean()
-                
-                # 2. Window Metrics
-                pck_kps_w = df_subset['is_correct_window'].mean()
-                img_scores_w = df_subset.groupby(['pair_id', 'src_img'])['is_correct_window'].mean()
-                pck_img_w = img_scores_w.mean()
-                
-                print(f"\nTotal Keypoints Evaluated: {len(df_subset)}")
-                print(f"Total Images Evaluated:    {len(img_scores_g)}")
-                print("-" * 60)
-                print(f"{'METRIC':<20} | {'GLOBAL':<10} | {'WINDOW':<10} | {'DELTA':<10}")
-                print("-" * 60)
-                print(f"{'PCK (Per Keypoint)':<20} | {pck_kps_g:.2%}     | {pck_kps_w:.2%}     | {pck_kps_w - pck_kps_g:+.2%}")
-                print(f"{'PCK (Per Image)':<20} | {pck_img_g:.2%}     | {pck_img_w:.2%}     | {pck_img_w - pck_img_g:+.2%}")
-                print("-" * 60)
-
-            def print_by_category(df_subset, alpha_suffix=""):
-                # Metric 1: Per-Keypoint PCK (Global, Window & Per Category)
-                cat_pck_kps_g = df_subset.groupby('category')['is_correct_global'].mean()
-                cat_pck_kps_w = df_subset.groupby('category')['is_correct_window'].mean()
-                
-                # Metric 2: Per-Image PCK (Global, Window & Per Category)
-                # Formula: Average of (Correct / Visible) for each image pair
-                img_scores = df_subset.groupby(['pair_id', 'category'])[['is_correct_global', 'is_correct_window']].mean().reset_index()
-                
-                cat_pck_img_g = img_scores.groupby('category')['is_correct_global'].mean()
-                cat_pck_img_w = img_scores.groupby('category')['is_correct_window'].mean()
-
-                # Assemble Final Table
-                summary = pd.DataFrame({
-                    'Img_Global': cat_pck_img_g,
-                    'Img_Window': cat_pck_img_w,
-                    'Kps_Global': cat_pck_kps_g,
-                    'Kps_Window': cat_pck_kps_w,
-                    'Num_Images': img_scores['category'].value_counts()
-                })
-                
-                # Sort by PCK Image Window score
-                summary = summary.sort_values('Img_Window', ascending=False)
-
-                print("\n" + "="*105)
-                print(f"{'CATEGORY':<20} | {'IMG (G)':<10} | {'IMG (W)':<10} | {'KPS (G)':<10} | {'KPS (W)':<10} | {'# IMGS':<8}")
-                print("-" * 105)
-                
-                for cat, row in summary.iterrows():
-                    print(f"{cat:<20} | {row['Img_Global']:<10.2%} | {row['Img_Window']:<10.2%} | {row['Kps_Global']:<10.2%} | {row['Kps_Window']:<10.2%} | {int(row['Num_Images']):<8}")
+                def print_summary(df_subset):
+                    # 1. Global Metrics
+                    pck_kps_g = df_subset['is_correct_global'].mean()
+                    img_scores_g = df_subset.groupby(['pair_id', 'src_img'])['is_correct_global'].mean()
+                    pck_img_g = img_scores_g.mean()
                     
-                print("-" * 105)
-                # Use columns directly from dataframes to ensure overall mean is accurate across all samples
-                global_img_g = img_scores['is_correct_global'].mean()
-                global_img_w = img_scores['is_correct_window'].mean()
-                global_kps_g = df_subset['is_correct_global'].mean()
-                global_kps_w = df_subset['is_correct_window'].mean()
-                
-                print(f"{'OVERALL (Mean)':<20} | {global_img_g:<10.2%} | {global_img_w:<10.2%} | {global_kps_g:<10.2%} | {global_kps_w:<10.2%} | {len(img_scores)}")
-                print("=" * 105)
+                    # 2. Window Metrics
+                    pck_kps_w = df_subset['is_correct_window'].mean()
+                    img_scores_w = df_subset.groupby(['pair_id', 'src_img'])['is_correct_window'].mean()
+                    pck_img_w = img_scores_w.mean()
+                    
+                    print(f"\nTotal Keypoints Evaluated: {len(df_subset)}")
+                    print(f"Total Images Evaluated:    {len(img_scores_g)}")
+                    print("-" * 60)
+                    print(f"{'METRIC':<20} | {'GLOBAL':<10} | {'WINDOW':<10} | {'DELTA':<10}")
+                    print("-" * 60)
+                    print(f"{'PCK (Per Keypoint)':<20} | {pck_kps_g:.2%}     | {pck_kps_w:.2%}     | {pck_kps_w - pck_kps_g:+.2%}")
+                    print(f"{'PCK (Per Image)':<20} | {pck_img_g:.2%}     | {pck_img_w:.2%}     | {pck_img_w - pck_img_g:+.2%}")
+                    print("-" * 60)
 
-                # Save to file
-                by_category_output_path = os.path.join(save_dir, f'summary_by_category{alpha_suffix}.csv')
-                summary.to_csv(by_category_output_path)
-                print(f"\nBy category table saved to: {by_category_output_path}")
+                def print_by_category(df_subset, alpha_suffix=""):
+                    # Metric 1: Per-Keypoint PCK (Global, Window & Per Category)
+                    cat_pck_kps_g = df_subset.groupby('category')['is_correct_global'].mean()
+                    cat_pck_kps_w = df_subset.groupby('category')['is_correct_window'].mean()
+                    
+                    # Metric 2: Per-Image PCK (Global, Window & Per Category)
+                    # Formula: Average of (Correct / Visible) for each image pair
+                    img_scores = df_subset.groupby(['pair_id', 'category'])[['is_correct_global', 'is_correct_window']].mean().reset_index()
+                    
+                    cat_pck_img_g = img_scores.groupby('category')['is_correct_global'].mean()
+                    cat_pck_img_w = img_scores.groupby('category')['is_correct_window'].mean()
 
-            # Print results for this alpha value
-            print_summary(df_alpha)
-            
-            # Add alpha suffix to output files
-            alpha_suffix = f"_alpha_{alpha_val}"
-            print_by_category(df_alpha, alpha_suffix)
+                    # Assemble Final Table
+                    summary = pd.DataFrame({
+                        'Img_Global': cat_pck_img_g,
+                        'Img_Window': cat_pck_img_w,
+                        'Kps_Global': cat_pck_kps_g,
+                        'Kps_Window': cat_pck_kps_w,
+                        'Num_Images': img_scores['category'].value_counts()
+                    })
+                    
+                    # Sort by PCK Image Window score
+                    summary = summary.sort_values('Img_Window', ascending=False)
+
+                    print("\n" + "="*105)
+                    print(f"{'CATEGORY':<20} | {'IMG (G)':<10} | {'IMG (W)':<10} | {'KPS (G)':<10} | {'KPS (W)':<10} | {'# IMGS':<8}")
+                    print("-" * 105)
+                    
+                    for cat, row in summary.iterrows():
+                        print(f"{cat:<20} | {row['Img_Global']:<10.2%} | {row['Img_Window']:<10.2%} | {row['Kps_Global']:<10.2%} | {row['Kps_Window']:<10.2%} | {int(row['Num_Images']):<8}")
+                        
+                    print("-" * 105)
+                    # Use columns directly from dataframes to ensure overall mean is accurate across all samples
+                    global_img_g = img_scores['is_correct_global'].mean()
+                    global_img_w = img_scores['is_correct_window'].mean()
+                    global_kps_g = df_subset['is_correct_global'].mean()
+                    global_kps_w = df_subset['is_correct_window'].mean()
+                    
+                    print(f"{'OVERALL (Mean)':<20} | {global_img_g:<10.2%} | {global_img_w:<10.2%} | {global_kps_g:<10.2%} | {global_kps_w:<10.2%} | {len(img_scores)}")
+                    print("=" * 105)
+
+                    # Save to file
+                    by_category_output_path = os.path.join(save_dir, f'summary_by_category{alpha_suffix}.csv')
+                    summary.to_csv(by_category_output_path)
+                    print(f"\nBy category table saved to: {by_category_output_path}")
+
+                # Print results for this combination
+                print_summary(df_subset)
+                print_by_category(df_subset, alpha_suffix)
 
     def _plot_pair(self, res, save_path):
         """
