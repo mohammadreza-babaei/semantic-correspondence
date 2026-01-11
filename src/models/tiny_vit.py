@@ -31,7 +31,7 @@ class TinyViTAdapter:
         
         print(f"Initializing {model_name} on {self.device}...")
         
-        # 1. Load Model via TIMM
+        # Load Model via TIMM
         self.model = timm.create_model(
             model_name, 
             pretrained=(weights_path is None), 
@@ -40,7 +40,7 @@ class TinyViTAdapter:
             features_only=True   
         ).to(self.device)
         
-        # 2. Load Custom Weights (if provided)
+        # Load Custom Weights (if provided)
         if weights_path is not None and os.path.exists(weights_path):
             print(f"Loading custom weights from {weights_path}")
             checkpoint = safe_torch_load(weights_path, map_location='cpu')
@@ -58,7 +58,7 @@ class TinyViTAdapter:
 
         self.model.eval()
 
-        # 3. Freeze / Unfreeze Logic
+        # Freeze / Unfreeze Logic
         for param in self.model.parameters():
             param.requires_grad = False
             

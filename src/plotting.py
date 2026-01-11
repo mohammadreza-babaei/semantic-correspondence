@@ -66,53 +66,7 @@ def plot_training_history(history, save_path=None):
     plt.close(fig)
     return fig
 
-def _update_plots(history, fig, axes, current_epoch):
-        """Update training visualization plots."""
-        axes[0].clear()
-        axes[1].clear()
-        
-        # Plot 1: Epoch-level losses
-        epochs = range(1, len(history['train_loss']) + 1)
-        axes[0].plot(epochs, history['train_loss'], 'b-o', 
-                     label='Train Loss', linewidth=2, markersize=6)
-        if history['val_loss']:
-            axes[0].plot(epochs, history['val_loss'], 'r-s', 
-                         label='Val Loss', linewidth=2, markersize=6)
-        axes[0].set_xlabel('Epoch', fontsize=12)
-        axes[0].set_ylabel('Loss', fontsize=12)
-        axes[0].set_title(f'Training Progress (Epoch {current_epoch})', fontsize=14)
-        axes[0].legend(loc='upper right', fontsize=10)
-        axes[0].grid(True, alpha=0.3)
-        axes[0].set_xlim(0.5, max(current_epoch, 1) + 0.5)
-        
-        # Plot 2: Batch-level losses (smoothed)
-        if len(history['epoch_train_losses']) > 0:
-            batch_losses = history['epoch_train_losses']
-            
-            # Moving average smoothing
-            window_size = min(50, len(batch_losses) // 10 + 1)
-            if window_size > 1:
-                smoothed = np.convolve(batch_losses, 
-                                       np.ones(window_size)/window_size, 
-                                       mode='valid')
-                x_smooth = range(window_size // 2, window_size // 2 + len(smoothed))
-                axes[1].plot(x_smooth, smoothed, 'g-', 
-                             label=f'Smoothed (window={window_size})', 
-                             linewidth=2, alpha=0.9)
-            
-            # Raw losses (semi-transparent)
-            axes[1].plot(batch_losses, 'b-', alpha=0.3, 
-                         label='Raw', linewidth=0.5)
-            
-            axes[1].set_xlabel('Batch', fontsize=12)
-            axes[1].set_ylabel('Loss', fontsize=12)
-            axes[1].set_title('Batch-level Training Loss', fontsize=14)
-            axes[1].legend(loc='upper right', fontsize=10)
-            axes[1].grid(True, alpha=0.3)
-        
-        fig.tight_layout()
-        fig.canvas.draw()
-        fig.canvas.flush_events()
+
 
 
 def plot_block_weights(block, block_idx, save_path):

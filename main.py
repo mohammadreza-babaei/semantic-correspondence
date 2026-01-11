@@ -5,58 +5,11 @@ import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
 
-from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter, TinyViTAdapter, TinySAMAdapter, MixedModelAdapter
+from src.models import create_model_adapter
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 from src.evaluator import PCKEvaluator
 
-
-
-def create_eval_adapter(model_name, weights_path, args, device):
-    """Helper to create an adapter for evaluation."""
-    if "dinov2" in model_name:
-        return DINOv2Adapter(
-            model_name=model_name,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=weights_path
-        )
-    elif "dinov3" in model_name:
-        return DINOv3Adapter(
-            model_name=model_name,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=weights_path
-        )
-    elif "sam" in model_name:
-        return SAMAdapter(
-            model_name=model_name.replace("sam_", ""),
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=weights_path,
-            unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
-        )
-    elif "tiny_vit" in model_name:
-        return TinyViTAdapter(
-            model_name='tiny_vit_21m_512.dist_in22k_ft_in1k', 
-            weights_path=weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
-        )
-    elif "tiny_sam" in args.model_name:
-        return TinySAMAdapter(
-            model_name=args.model_name,
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            unfreeze_neck=args.unfreeze_neck,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
-        )
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
 
 
 def main():
@@ -166,37 +119,19 @@ def main():
     
     args = parser.parse_args()
 
-    # Infer model type from model name
-    if "dinov2" in args.model_name:
-        model_type = "dinov2"
-    elif "dinov3" in args.model_name:
-        model_type = "dinov3"
-    elif "tinysam" in args.model_name:
-        model_type = "tinysam"
-    elif "sam" in args.model_name:
-        model_type = "sam"
-    elif "tiny_vit" in args.model_name:
-        model_type = "tiny_vit"
-    else:
-        # Fallback or error, though choices constraint handles most valid cases
-        if "dino" in args.model_name:
-             model_type = "dinov2" # Default assumption for legacy
-        else:
-             raise ValueError(f"Could not infer model type from name: {args.model_name}")
-
     # Set default save path if not provided
     if args.save_path is None:
-        args.save_path = f"checkpoints/finetuned_{model_type}"
+        args.save_path = f"checkpoints/finetuned_{args.model_name}"
 
     if args.command == "fine_tune":
-        fine_tune(args, model_type)
+        fine_tune(args)
     elif args.command == "eval":
         evaluate(args)
 
 
-def fine_tune(args, model_type):
+def fine_tune(args):
     """Fine-tune the selected model for semantic correspondence."""
-    model_display_name = model_type.upper()
+    model_display_name = args.model_name.upper()
     print("="*60)
     print(f"{model_display_name} Fine-Tuning for Semantic Correspondence")
     print("="*60)    
@@ -223,66 +158,25 @@ def fine_tune(args, model_type):
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    if model_type == 'dinov2':
-        fine_tuner = DINOv2Adapter(
-            model_name=args.model_name,
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
-        )
-
-    elif model_type == 'dinov3':
+    if 'dinov3' in args.model_name:
         DINOV3_DOWNLOAD_URL="https://github.com/facebookresearch/dinov3"
-        assert args.weights_path is not None, "Weights path must be specified for DINOV3. Download from {DINOV3_DOWNLOAD_URL}"
-        fine_tuner = DINOv3Adapter(
-            model_name=args.model_name,
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
-        )
-    elif model_type == 'sam':
-        SAM_DOWNLOAD_URL="https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints"
-        assert args.weights_path is not None, "Weights path must be specified for SAM. Download from {SAM_DOWNLOAD_URL}"
-        fine_tuner = SAMAdapter(
-            model_name=args.model_name.replace("sam_", ""),
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            unfreeze_neck=args.unfreeze_neck,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
-        )
-    elif model_type == 'tiny_vit':
-        fine_tuner = TinyViTAdapter(
-            model_name='tiny_vit_21m_512.dist_in22k_ft_in1k', 
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
-        )
-    elif model_type == 'tinysam':
-        fine_tuner = TinySAMAdapter(
-            model_name='vit_t',
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-            resolution=args.resolution
-        )
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        assert args.weights_path is not None, f"Weights path must be specified for DINOV3. Download from {DINOV3_DOWNLOAD_URL}"
+    elif 'sam' in args.model_name and 'tinysam' not in args.model_name:
+         SAM_DOWNLOAD_URL="https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints"
+         assert args.weights_path is not None, f"Weights path must be specified for SAM. Download from {SAM_DOWNLOAD_URL}"
+         
+    fine_tuner = create_model_adapter(
+        model_name=args.model_name,
+        device=device,
+        weights_path=args.weights_path,
+        num_unfrozen_blocks=args.num_unfrozen_blocks,
+        dropout=args.dropout,
+        use_lora=args.use_lora,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        unfreeze_neck=args.unfreeze_neck,
+        resolution=args.resolution
+    )
 
     model = Trainer(
         model=fine_tuner,
@@ -344,76 +238,33 @@ def evaluate(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     
-    # 1. Load Data
+    # Load Data
     dataset_path = args.dataset_path or os.environ.get('SPAIR_URL', './data')
     eval_dataset = SPair71kPairs(root=dataset_path, split=args.split)
     
-    # 2. Initialize Adapter
-    adapter1 = create_eval_adapter(args.model_name, args.weights_path, args, device)
-
-    print("Initializing architecture...")
-    if "dinov2" in args.model_name:
-        adapter = DINOv2Adapter(
-            model_name=args.model_name,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path
-        )
-    elif "dinov3" in args.model_name:
-        adapter = DINOv3Adapter(
-            model_name=args.model_name,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path
-        )
-    elif "tinysam" in args.model_name:
-        adapter = TinySAMAdapter(
-            model_name='vit_t',
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path,
-            resolution=args.resolution
-        )
-    elif "sam" in args.model_name:
-        adapter = SAMAdapter(
-            model_name=args.model_name.replace("sam_", ""),
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path,
-            unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
-        )
-    elif "tiny_vit" in args.model_name:
-        adapter = TinyViTAdapter(
-            model_name='tiny_vit_21m_512.dist_in22k_ft_in1k', 
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
-        )
-    else:
-        raise ValueError(f"Unknown model: {args.model_name}")
+    # Initialize Adapter
+    print(f"Initializing adapter for {args.model_name}...")
     
-    if args.mix_model_name:
-        print(f"Initializing second model for mixing: {args.mix_model_name}")
-        adapter2 = create_eval_adapter(args.mix_model_name, args.mix_weights_path, args, device)
-        
-        mix_weights = None
-        if args.mix_weights:
-            try:
-                mix_weights = [float(w) for w in args.mix_weights.split(',')]
-                if len(mix_weights) != 2:
-                    raise ValueError("mix-weights must have exactly two values")
-                print(f"Using mixing weights: {mix_weights}")
-            except ValueError as e:
-                print(f"Error parsing mix-weights: {e}")
-                raise
-                
-        adapter = MixedModelAdapter(adapter1, adapter2, mix_weights=mix_weights)
-        print(f"Created MixedModelAdapter: {adapter.model_name}")
-    else:
-        adapter = adapter1
+    adapter = create_model_adapter(
+        model_name=args.model_name,
+        device=device,
+        weights_path=args.weights_path,
+        num_unfrozen_blocks=args.num_unfrozen_blocks,
+        dropout=getattr(args, 'dropout', 0.0),
+        use_lora=getattr(args, 'use_lora', False),
+        lora_rank=getattr(args, 'lora_rank', 8),
+        lora_alpha=getattr(args, 'lora_alpha', 16),
+        unfreeze_neck=getattr(args, 'unfreeze_neck', False),
+        resolution=args.resolution,
+        mix_model_name=args.mix_model_name,
+        mix_weights_path=args.mix_weights_path,
+        mix_weights=args.mix_weights
+    )
+    
+    print(f"Adapter created: {type(adapter).__name__}")
     
     
-    # 4. Initialize Trainer (Wrapper for Caching)
+    # Initialize Trainer (Wrapper for Caching)
     trainer = Trainer(
         model=adapter,
         device=device,
@@ -421,11 +272,11 @@ def evaluate(args):
         temperature=args.temperature
     )
 
-    # 5. Extract Features
+    # Extract Features
     print(f"\nPre-extracting features for {args.split.capitalize()} Set...")
     trainer.cache_intermediate_features(eval_dataset, num_augmentations=0)
     
-    # 6. Create Dataloader
+    # Create Dataloader
     eval_loader = DataLoader(
         eval_dataset, 
         batch_size=1, 
@@ -435,15 +286,16 @@ def evaluate(args):
     )
 
     
-    # 7. Run Evaluation
+    # Run Evaluation
     # Parse window sizes from comma-separated string to list of ints
     window_sizes = [int(w.strip()) for w in args.window_size.split(',')]
     window_sizes_str = '_'.join([str(w) for w in window_sizes])
     
-    evaluator = PCKEvaluator(trainer=trainer, device=device, window_sizes=window_sizes, temperature=args.temperature)
+    evaluator = PCKEvaluator(model=trainer.model, device=device, cached_dataset=trainer.cached_dataset, window_sizes=window_sizes, temperature=args.temperature)
 
     if args.plot_pair is not None:
-        test_single_sample(trainer, device, eval_dataset, args.plot_pair, window_size=window_sizes[0])
+        output_dir = "evaluations/pictures"
+        evaluator.evaluate_pair_by_index(args.plot_pair, output_dir=output_dir)
         return
     
     # Parse alpha values from comma-separated string to list of floats
@@ -452,33 +304,12 @@ def evaluate(args):
     
     results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha_{alphas_str}_ws_{window_sizes_str}.csv"
 
-    # 8. Print Results
+    # Print Results
     print("\n")
     print(f"Results for {args.split} with alpha values: {alphas} and window sizes: {window_sizes}")
     evaluator.evaluate(eval_loader, results_file, alphas=alphas)
     PCKEvaluator.process_results(results_file, "evaluations/metrics")
     
-
-
-def test_single_sample(trainer, device, dataset, sample_id, window_size=5):
-    """
-    Evaluates a specific sample ID using the PCKEvaluator and displays the result inline.
-
-    Args:
-        trainer: Your active Trainer instance.
-        device: 'cuda' or 'cpu'.
-        sample_id (int): The index of the pair to test.
-        output_dir (str): Folder to save temporary visualization.
-        window_size (int): Window size for local refinement.
-    """
-    # 1. Instantiate the Evaluator
-    # Ensure this matches your import (e.g., from evaluator import PCKEvaluator)
-    evaluator = PCKEvaluator(trainer, device, dataset=dataset, window_size=window_size)
-
-    output_dir = "evaluations/pictures"
-    evaluator.evaluate_pair_by_index(sample_id, output_dir=output_dir)
-
-
 
 if __name__ == "__main__":
     main()
