@@ -312,7 +312,8 @@ def evaluate(args):
     evaluator = PCKEvaluator(trainer=trainer, device=device, window_sizes=window_sizes, temperature=args.temperature)
 
     if args.plot_pair is not None:
-        test_single_sample(trainer, device, eval_dataset, args.plot_pair, window_size=window_sizes[0])
+        output_dir = "evaluations/pictures"
+        evaluator.evaluate_pair_by_index(args.plot_pair, output_dir=output_dir)
         return
     
     # Parse alpha values from comma-separated string to list of floats
@@ -327,27 +328,6 @@ def evaluate(args):
     evaluator.evaluate(eval_loader, results_file, alphas=alphas)
     PCKEvaluator.process_results(results_file, "evaluations/metrics")
     
-
-
-def test_single_sample(trainer, device, dataset, sample_id, window_size=5):
-    """
-    Evaluates a specific sample ID using the PCKEvaluator and displays the result inline.
-
-    Args:
-        trainer: Your active Trainer instance.
-        device: 'cuda' or 'cpu'.
-        sample_id (int): The index of the pair to test.
-        output_dir (str): Folder to save temporary visualization.
-        window_size (int): Window size for local refinement.
-    """
-    # Instantiate the Evaluator
-    # Ensure this matches your import (e.g., from evaluator import PCKEvaluator)
-    evaluator = PCKEvaluator(trainer, device, dataset=dataset, window_size=window_size)
-
-    output_dir = "evaluations/pictures"
-    evaluator.evaluate_pair_by_index(sample_id, output_dir=output_dir)
-
-
 
 if __name__ == "__main__":
     main()
