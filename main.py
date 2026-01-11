@@ -344,11 +344,11 @@ def evaluate(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     
-    # 1. Load Data
+    # Load Data
     dataset_path = args.dataset_path or os.environ.get('SPAIR_URL', './data')
     eval_dataset = SPair71kPairs(root=dataset_path, split=args.split)
     
-    # 2. Initialize Adapter
+    # Initialize Adapter
     adapter1 = create_eval_adapter(args.model_name, args.weights_path, args, device)
 
     print("Initializing architecture...")
@@ -413,7 +413,7 @@ def evaluate(args):
         adapter = adapter1
     
     
-    # 4. Initialize Trainer (Wrapper for Caching)
+    # Initialize Trainer (Wrapper for Caching)
     trainer = Trainer(
         model=adapter,
         device=device,
@@ -421,11 +421,11 @@ def evaluate(args):
         temperature=args.temperature
     )
 
-    # 5. Extract Features
+    # Extract Features
     print(f"\nPre-extracting features for {args.split.capitalize()} Set...")
     trainer.cache_intermediate_features(eval_dataset, num_augmentations=0)
     
-    # 6. Create Dataloader
+    # Create Dataloader
     eval_loader = DataLoader(
         eval_dataset, 
         batch_size=1, 
@@ -435,7 +435,7 @@ def evaluate(args):
     )
 
     
-    # 7. Run Evaluation
+    # Run Evaluation
     # Parse window sizes from comma-separated string to list of ints
     window_sizes = [int(w.strip()) for w in args.window_size.split(',')]
     window_sizes_str = '_'.join([str(w) for w in window_sizes])
@@ -452,7 +452,7 @@ def evaluate(args):
     
     results_file = f"evaluations/metrics/{args.split}_results_{args.model_name}_alpha_{alphas_str}_ws_{window_sizes_str}.csv"
 
-    # 8. Print Results
+    # Print Results
     print("\n")
     print(f"Results for {args.split} with alpha values: {alphas} and window sizes: {window_sizes}")
     evaluator.evaluate(eval_loader, results_file, alphas=alphas)
@@ -471,7 +471,7 @@ def test_single_sample(trainer, device, dataset, sample_id, window_size=5):
         output_dir (str): Folder to save temporary visualization.
         window_size (int): Window size for local refinement.
     """
-    # 1. Instantiate the Evaluator
+    # Instantiate the Evaluator
     # Ensure this matches your import (e.g., from evaluator import PCKEvaluator)
     evaluator = PCKEvaluator(trainer, device, dataset=dataset, window_size=window_size)
 

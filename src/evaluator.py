@@ -41,13 +41,11 @@ class PCKEvaluator:
             src_input = src_input.unsqueeze(0)
 
         with torch.no_grad():
-            # 1. Global Prediction
             pred_g_norm = predict_keypoints(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
                 temperature=self.temperature
             )
-            # 2. Window Prediction (use first window size for validation)
             pred_w_norm = predict_keypoints_window(
                 feat1, feat2, src_input,
                 src_img_size=(self.standard_size, self.standard_size),
@@ -122,7 +120,7 @@ class PCKEvaluator:
         Internal method for evaluate() loop. Handles data loading, CSV logging,
         and accumulating data for visualization.
         """
-        # 1. Unpack Metadata
+        # Unpack Metadata
         pair_id = pair['pair_id']
         src_name = pair['src_name']
         trg_name = pair['trg_name']
@@ -259,11 +257,9 @@ class PCKEvaluator:
                     print("-" * 60)
 
                 def print_by_category(df_subset, alpha_suffix=""):
-                    # Metric 1: Per-Keypoint PCK (Global, Window & Per Category)
                     cat_pck_kps_g = df_subset.groupby('category')['is_correct_global'].mean()
                     cat_pck_kps_w = df_subset.groupby('category')['is_correct_window'].mean()
                     
-                    # Metric 2: Per-Image PCK (Global, Window & Per Category)
                     # Formula: Average of (Correct / Visible) for each image pair
                     img_scores = df_subset.groupby(['pair_id', 'category'])[['is_correct_global', 'is_correct_window']].mean().reset_index()
                     
@@ -506,7 +502,7 @@ class PCKEvaluator:
         # Create 3 subplots
         fig, ax = plt.subplots(1, 3, figsize=(18, 6))
 
-        # --- 1. Source ---
+        # --- Source ---
         ax[0].imshow(src_img)
         ax[0].set_title("Source (Query)")
         ax[0].axis('off')
@@ -555,10 +551,10 @@ class PCKEvaluator:
             
             ax[ax_idx].legend(loc='lower right', fontsize='small')
 
-        # --- 2. Global Result ---
+        # --- Global Result ---
         plot_target(1, "Global Method", res['pred_global'], res['pck_g'], res['err_g'])
 
-        # --- 3. Window Result ---
+        # --- Window Result ---
         plot_target(2, "Window Method", res['pred_window'], res['pck_w'], res['err_w'])
 
         plt.tight_layout()

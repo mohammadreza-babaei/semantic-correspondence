@@ -262,7 +262,6 @@ class Trainer():
             batch['src_kps'], batch['trg_kps'], src_orig_size, trg_orig_size
         )
         
-        # 1. Compute Loss
         with torch.no_grad():
             if len(src_kps_vis) > 0:
                 loss = the_new_loss(
@@ -276,7 +275,6 @@ class Trainer():
             else:
                 loss_val = 0.0
 
-        # 2. Compute PCK using Evaluator
         # Need unfiltered keypoints for PCK (evaluator handles visibility via batch)
         src_kps_all, _ = self._prepare_keypoints(
             batch['src_kps'], batch['trg_kps'], src_orig_size, trg_orig_size, 
@@ -410,7 +408,6 @@ class Trainer():
         # Create output directory
         os.makedirs(save_path, exist_ok=True)
 
-        # CSV SETUP for PCK 
         model_name_clean = self.model.model_name.replace('/', '_')
         csv_filename = f"val_metrics_{model_name_clean}_e{epochs}_b{batch_size}.csv"
         csv_path = Path(save_path) / csv_filename
@@ -422,7 +419,6 @@ class Trainer():
             if file_mode == 'w':
                 writer.writerow(['epoch', 'batch', 'train_loss', 'val_loss', 'pck_global', 'pck_window'])
 
-        # CSV SETUP for TRAIN 
         csv_filename = f"training_log_e{epochs}_b{batch_size}.csv"
         csv_file_path = os.path.join(save_path, csv_filename)
         
