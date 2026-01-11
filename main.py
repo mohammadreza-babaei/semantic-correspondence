@@ -5,58 +5,11 @@ import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
 
-from src.models import DINOv3Adapter, DINOv2Adapter, SAMAdapter, TinyViTAdapter, TinySAMAdapter, MixedModelAdapter
+from src.models import create_model_adapter
 from src.spair_dataset import SPair71kImages, SPair71kPairs
 from src.trainer import Trainer
 from src.evaluator import PCKEvaluator
 
-
-
-def create_eval_adapter(model_name, weights_path, args, device):
-    """Helper to create an adapter for evaluation."""
-    if "dinov2" in model_name:
-        return DINOv2Adapter(
-            model_name=model_name,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=weights_path
-        )
-    elif "dinov3" in model_name:
-        return DINOv3Adapter(
-            model_name=model_name,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=weights_path
-        )
-    elif "sam" in model_name:
-        return SAMAdapter(
-            model_name=model_name.replace("sam_", ""),
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=weights_path,
-            unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
-        )
-    elif "tiny_vit" in model_name:
-        return TinyViTAdapter(
-            model_name='tiny_vit_21m_512.dist_in22k_ft_in1k', 
-            weights_path=weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
-        )
-    elif "tiny_sam" in args.model_name:
-        return TinySAMAdapter(
-            model_name=args.model_name,
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            unfreeze_neck=args.unfreeze_neck,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
-        )
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
 
 
 def main():
@@ -223,66 +176,25 @@ def fine_tune(args, model_type):
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    if model_type == 'dinov2':
-        fine_tuner = DINOv2Adapter(
-            model_name=args.model_name,
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
-        )
-
-    elif model_type == 'dinov3':
+    if model_type == 'dinov3':
         DINOV3_DOWNLOAD_URL="https://github.com/facebookresearch/dinov3"
-        assert args.weights_path is not None, "Weights path must be specified for DINOV3. Download from {DINOV3_DOWNLOAD_URL}"
-        fine_tuner = DINOv3Adapter(
-            model_name=args.model_name,
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
-        )
+        assert args.weights_path is not None, f"Weights path must be specified for DINOV3. Download from {DINOV3_DOWNLOAD_URL}"
     elif model_type == 'sam':
-        SAM_DOWNLOAD_URL="https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints"
-        assert args.weights_path is not None, "Weights path must be specified for SAM. Download from {SAM_DOWNLOAD_URL}"
-        fine_tuner = SAMAdapter(
-            model_name=args.model_name.replace("sam_", ""),
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            unfreeze_neck=args.unfreeze_neck,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha
-        )
-    elif model_type == 'tiny_vit':
-        fine_tuner = TinyViTAdapter(
-            model_name='tiny_vit_21m_512.dist_in22k_ft_in1k', 
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
-        )
-    elif model_type == 'tinysam':
-        fine_tuner = TinySAMAdapter(
-            model_name='vit_t',
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            dropout=args.dropout,
-            use_lora=args.use_lora,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-            resolution=args.resolution
-        )
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
+         SAM_DOWNLOAD_URL="https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints"
+         assert args.weights_path is not None, f"Weights path must be specified for SAM. Download from {SAM_DOWNLOAD_URL}"
+         
+    fine_tuner = create_model_adapter(
+        model_name=args.model_name,
+        device=device,
+        weights_path=args.weights_path,
+        num_unfrozen_blocks=args.num_unfrozen_blocks,
+        dropout=args.dropout,
+        use_lora=args.use_lora,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        unfreeze_neck=args.unfreeze_neck,
+        resolution=args.resolution
+    )
 
     model = Trainer(
         model=fine_tuner,
@@ -349,68 +261,25 @@ def evaluate(args):
     eval_dataset = SPair71kPairs(root=dataset_path, split=args.split)
     
     # Initialize Adapter
-    adapter1 = create_eval_adapter(args.model_name, args.weights_path, args, device)
-
-    print("Initializing architecture...")
-    if "dinov2" in args.model_name:
-        adapter = DINOv2Adapter(
-            model_name=args.model_name,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path
-        )
-    elif "dinov3" in args.model_name:
-        adapter = DINOv3Adapter(
-            model_name=args.model_name,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path
-        )
-    elif "tinysam" in args.model_name:
-        adapter = TinySAMAdapter(
-            model_name='vit_t',
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path,
-            resolution=args.resolution
-        )
-    elif "sam" in args.model_name:
-        adapter = SAMAdapter(
-            model_name=args.model_name.replace("sam_", ""),
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks,
-            weights_path=args.weights_path,
-            unfreeze_neck=args.unfreeze_neck if hasattr(args, 'unfreeze_neck') else False
-        )
-    elif "tiny_vit" in args.model_name:
-        adapter = TinyViTAdapter(
-            model_name='tiny_vit_21m_512.dist_in22k_ft_in1k', 
-            weights_path=args.weights_path,
-            device=device,
-            num_unfrozen_blocks=args.num_unfrozen_blocks
-        )
-    else:
-        raise ValueError(f"Unknown model: {args.model_name}")
+    print(f"Initializing adapter for {args.model_name}...")
     
-    if args.mix_model_name:
-        print(f"Initializing second model for mixing: {args.mix_model_name}")
-        adapter2 = create_eval_adapter(args.mix_model_name, args.mix_weights_path, args, device)
-        
-        mix_weights = None
-        if args.mix_weights:
-            try:
-                mix_weights = [float(w) for w in args.mix_weights.split(',')]
-                if len(mix_weights) != 2:
-                    raise ValueError("mix-weights must have exactly two values")
-                print(f"Using mixing weights: {mix_weights}")
-            except ValueError as e:
-                print(f"Error parsing mix-weights: {e}")
-                raise
-                
-        adapter = MixedModelAdapter(adapter1, adapter2, mix_weights=mix_weights)
-        print(f"Created MixedModelAdapter: {adapter.model_name}")
-    else:
-        adapter = adapter1
+    adapter = create_model_adapter(
+        model_name=args.model_name,
+        device=device,
+        weights_path=args.weights_path,
+        num_unfrozen_blocks=args.num_unfrozen_blocks,
+        dropout=getattr(args, 'dropout', 0.0),
+        use_lora=getattr(args, 'use_lora', False),
+        lora_rank=getattr(args, 'lora_rank', 8),
+        lora_alpha=getattr(args, 'lora_alpha', 16),
+        unfreeze_neck=getattr(args, 'unfreeze_neck', False),
+        resolution=args.resolution,
+        mix_model_name=args.mix_model_name,
+        mix_weights_path=args.mix_weights_path,
+        mix_weights=args.mix_weights
+    )
+    
+    print(f"Adapter created: {type(adapter).__name__}")
     
     
     # Initialize Trainer (Wrapper for Caching)
