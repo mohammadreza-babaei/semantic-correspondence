@@ -68,7 +68,23 @@ class TinySAMAdapter:
                 # Load state dict first
                 checkpoint = torch.load(weights_path, map_location=self.device)
                 state_dict, _ = extract_state_dict(checkpoint)
-                state_dict = clean_state_dict_keys(state_dict)
+                
+                # Clean keys but preserve 'image_encoder.' prefix (needed for sam_model loading)
+                prefixes_to_clean = ["model.", "base_model.model.", "teacher.", "backbone."]
+                state_dict = clean_state_dict_keys(state_dict, prefixes_to_remove=prefixes_to_clean)
+                
+                # Add 'image_encoder.' prefix if checkpoint has encoder-only keys
+                model_keys = set(self.sam_model.state_dict().keys())
+                if model_keys and not any(k.startswith('image_encoder.') for k in state_dict.keys()):
+                    encoder_keys = {k for k in model_keys if k.startswith('image_encoder.')}
+                    new_state_dict = {}
+                    for k, v in state_dict.items():
+                        prefixed_key = f'image_encoder.{k}'
+                        if prefixed_key in encoder_keys:
+                            new_state_dict[prefixed_key] = v
+                        else:
+                            new_state_dict[k] = v
+                    state_dict = new_state_dict
                 
                 # Check for shape mismatches and resize if needed
                 own_state = self.sam_model.state_dict()
