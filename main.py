@@ -119,37 +119,19 @@ def main():
     
     args = parser.parse_args()
 
-    # Infer model type from model name
-    if "dinov2" in args.model_name:
-        model_type = "dinov2"
-    elif "dinov3" in args.model_name:
-        model_type = "dinov3"
-    elif "tinysam" in args.model_name:
-        model_type = "tinysam"
-    elif "sam" in args.model_name:
-        model_type = "sam"
-    elif "tiny_vit" in args.model_name:
-        model_type = "tiny_vit"
-    else:
-        # Fallback or error, though choices constraint handles most valid cases
-        if "dino" in args.model_name:
-             model_type = "dinov2" # Default assumption for legacy
-        else:
-             raise ValueError(f"Could not infer model type from name: {args.model_name}")
-
     # Set default save path if not provided
     if args.save_path is None:
-        args.save_path = f"checkpoints/finetuned_{model_type}"
+        args.save_path = f"checkpoints/finetuned_{args.model_name}"
 
     if args.command == "fine_tune":
-        fine_tune(args, model_type)
+        fine_tune(args)
     elif args.command == "eval":
         evaluate(args)
 
 
-def fine_tune(args, model_type):
+def fine_tune(args):
     """Fine-tune the selected model for semantic correspondence."""
-    model_display_name = model_type.upper()
+    model_display_name = args.model_name.upper()
     print("="*60)
     print(f"{model_display_name} Fine-Tuning for Semantic Correspondence")
     print("="*60)    
@@ -176,10 +158,10 @@ def fine_tune(args, model_type):
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    if model_type == 'dinov3':
+    if 'dinov3' in args.model_name:
         DINOV3_DOWNLOAD_URL="https://github.com/facebookresearch/dinov3"
         assert args.weights_path is not None, f"Weights path must be specified for DINOV3. Download from {DINOV3_DOWNLOAD_URL}"
-    elif model_type == 'sam':
+    elif 'sam' in args.model_name and 'tinysam' not in args.model_name:
          SAM_DOWNLOAD_URL="https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints"
          assert args.weights_path is not None, f"Weights path must be specified for SAM. Download from {SAM_DOWNLOAD_URL}"
          

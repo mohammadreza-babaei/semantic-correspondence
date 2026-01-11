@@ -24,7 +24,7 @@ def create_model_adapter(
     Factory function to create model adapters for training or evaluation.
     """
     
-    # Handle Mixed Model (Recursion)
+    # Handle Mixed Model 
     if mix_model_name:
         print(f"Initializing primary model: {model_name}")
         adapter1 = create_model_adapter(
@@ -45,9 +45,7 @@ def create_model_adapter(
             model_name=mix_model_name,
             device=device,
             weights_path=mix_weights_path,
-            num_unfrozen_blocks=num_unfrozen_blocks, # Usually same for both
-            # Secondary model usually explicitly just for features, so other params might default
-            # but passing them for consistency if needed.
+            num_unfrozen_blocks=num_unfrozen_blocks,
         )
         
         mixing_weights_list = None
@@ -78,9 +76,6 @@ def create_model_adapter(
         )
         
     elif "dinov3" in model_name:
-        # Check for weights if creating for fine-tuning? 
-        # Actually logic in main.py enforced weights_path for DINOv3 training.
-        # We can add a soft check or rely on the adapter to default or error.
         return DINOv3Adapter(
             model_name=model_name,
             device=device,
@@ -117,7 +112,7 @@ def create_model_adapter(
     elif "tinysam" in model_name:
         # usually tinysam_vit_t or just tinysam
         return TinySAMAdapter(
-            model_name='vit_t', # TinySAM mostly supports vit_t currently
+            model_name='vit_t',
             weights_path=weights_path,
             device=device,
             num_unfrozen_blocks=num_unfrozen_blocks,
@@ -132,7 +127,6 @@ def create_model_adapter(
     else:
         # Fallback or error
         if "dino" in model_name:
-             # Default assumption for legacy
              return DINOv2Adapter(
                 model_name=model_name,
                 device=device,

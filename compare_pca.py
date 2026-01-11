@@ -14,7 +14,7 @@ dinov3_finetuned_augmented = DINOv3Adapter(model_name='dinov3_vits16', weights_p
 
 sam = SAMAdapter(model_name='vit_b', weights_path='/home/lollo/Downloads/sam_vit_b_01ec64.pth', device=device)
 sam_finetuned_augmented = SAMAdapter(model_name='vit_b', weights_path='/home/lollo/Documents/models/finetuned_sam_vit_b_augmented_temp_0.02.pt', device=device)
-# Define image paths (you can pick any pair of images)
+# Define image paths 
 src_img = 'data/SPair-71k/JPEGImages/cat/2010_004954.jpg'
 trg_img = 'data/SPair-71k/JPEGImages/cat/2008_006999.jpg'
 
@@ -24,5 +24,4 @@ compare_models_pca(
     model_names=['DINOv2', 'DINOv2 (finetuned)', 'DINOv3', 'DINOv3 (finetuned)', 'SAM', 'SAM (finetuned)'],
     src_img_path=src_img,
     trg_img_path=trg_img,
-    save_path='comparison.png' # Optional, if not provided it shows the plot with plt.show()
-)
+    save_path='comparison.png')
