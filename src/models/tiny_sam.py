@@ -120,6 +120,46 @@ class TinySAMAdapter:
                                 except Exception as e:
                                     print(f"  Failed to resize {name}: {e}")
                                     
+                            elif 'attention_biases' in name:
+                                # TinySAM/TinyViT specific relative positional biases
+                                # Shape: (num_heads, num_offsets)
+                                try:
+                                    src_tensor = state_dict[name]
+                                    num_heads, src_len = src_tensor.shape
+                                    _, tgt_len = tgt_shape
+                                    
+                                    # Assuming windows are square-ish in offset space
+                                    # num_offsets = window_size * window_size (approx, for abs offsets)
+                                    src_size = int(src_len**0.5)
+                                    tgt_size = int(tgt_len**0.5)
+                                    
+                                    if src_size**2 == src_len and tgt_size**2 == tgt_len:
+                                        # Reshape to (1, num_heads, src_size, src_size)
+                                        src_tensor = src_tensor.view(1, num_heads, src_size, src_size)
+                                        
+                                        # Interpolate
+                                        tgt_tensor = F.interpolate(
+                                            src_tensor, 
+                                            size=(tgt_size, tgt_size), 
+                                            mode='bicubic', 
+                                            align_corners=False
+                                        )
+                                        
+                                        # Flatten back
+                                        tgt_tensor = tgt_tensor.view(num_heads, tgt_len)
+                                        state_dict[name] = tgt_tensor
+                                        print(f"  Resized attention_biases {name}: {src_len} -> {tgt_len}")
+                                    else:
+                                        # Fallback for non-perfect squares (e.g. due to unique offset logic)
+                                        # Simple linear interpolation on the last dim
+                                        src_tensor = src_tensor.unsqueeze(0) # (1, H, L)
+                                        tgt_tensor = F.interpolate(src_tensor, size=tgt_len, mode='linear', align_corners=False)
+                                        state_dict[name] = tgt_tensor.squeeze(0)
+                                        print(f"  Resized attention_biases {name} (linear): {src_len} -> {tgt_len}")
+
+                                except Exception as e:
+                                    print(f"  Failed to resize {name}: {e}")
+
                             elif 'pos_embed' in name:
                                 # Absolute pos embed (1, C, H, W) or (1, L, C)
                                 src_tensor = state_dict[name]
@@ -130,17 +170,32 @@ class TinySAMAdapter:
                                     src_tensor = src_tensor.permute(0, 2, 1).view(B, C, size, size)
                                     # Interpolate
                                     # Target size from current model
-                                    tgt_B, tgt_L, tgt_C = tgt_shape
-                                    tgt_size = int(tgt_L**0.5)
+                                    if len(tgt_shape) == 3:
+                                        tgt_B, tgt_L, tgt_C = tgt_shape
+                                        tgt_size = int(tgt_L**0.5)
+                                    else:
+                                        # (1, C, H, W)
+                                        tgt_size = tgt_shape[2]
                                     
                                     new_tensor = F.interpolate(src_tensor, size=(tgt_size, tgt_size), mode='bicubic', align_corners=False)
-                                    # Back to (1, L, C)
-                                    state_dict[name] = new_tensor.flatten(2).transpose(1, 2)
-                                    print("  Resized pos_embed successfully.")
+                                    
+                                    if len(tgt_shape) == 3:
+                                         # Back to (1, L, C)
+                                         state_dict[name] = new_tensor.flatten(2).transpose(1, 2)
+                                    else:
+                                         state_dict[name] = new_tensor
+                                         
+                                    print(f"  Resized pos_embed {name}")
 
                 # Load the potentially modified state dict
-                self.sam_model.load_state_dict(state_dict, strict=False)
-                print("TinySAM weights loaded (with resizing).")
+                msg = self.sam_model.load_state_dict(state_dict, strict=False)
+                print("TinySAM weights loaded.")
+                if len(msg.missing_keys) > 0:
+                    print(f"  Missing keys ({len(msg.missing_keys)}): {msg.missing_keys[:5]} ...")
+                    if len(msg.missing_keys) > 20:
+                         print("  (Warning: Many keys missing. Check if weights match model architecture.)")
+                if len(msg.unexpected_keys) > 0:
+                    print(f"  Unexpected keys ({len(msg.unexpected_keys)}): {msg.unexpected_keys[:5]} ...")
             else:
                 print(f"Warning: TinySAM weights '{weights_path}' not found. Using random init.")
         
