@@ -1,7 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 from sklearn.decomposition import PCA
+from PIL import Image
 import os
 
 def plot_training_history(history, save_path=None):
@@ -360,4 +362,137 @@ def compare_models_pca(models, src_img_path, trg_img_path, save_path=None, model
         plt.show()
 
 
+def visualize_heatmap(models, model_names, src_image_path, trg_image_path, save_path, point, temperature=0.02):
+    """
+    Visualize cosine similarity heatmaps showing correspondence between a source point and target image.
+    
+    Args:
+        models: List of model adapters
+        model_names: List of display names for each model
+        src_image_path: Path to source image
+        trg_image_path: Path to target image
+        save_path: Path to save the visualization
+        point: Tuple (x, y) of normalized coordinates [0,1] for the query point in the source image
+        temperature: Temperature parameter for softmax (lower = sharper heatmaps)
+    """
+    n_models = len(models)
+    
+    # Create figure with 1 row and n_models + 2 columns
+    # Column 0: Source image with query point
+    # Column 1: Target image
+    # Columns 2+: Heatmap overlays for each model
+    fig, axes = plt.subplots(1, n_models + 2, figsize=(4 * (n_models + 2), 4))
+    
+    # Ensure axes is always a 1D array
+    if n_models + 2 == 1:
+        axes = np.array([axes])
+    
+    # Load images for display
+    src_img_display = plt.imread(src_image_path)
+    trg_img_display = plt.imread(trg_image_path)
+    
+    # Normalized point coordinates
+    point_x_norm, point_y_norm = point
+    
+    # Plot source image with query point (Column 0)
+    axes[0].imshow(src_img_display)
+    src_h, src_w = src_img_display.shape[:2]
+    point_x_pixel = point_x_norm * src_w
+    point_y_pixel = point_y_norm * src_h
+    axes[0].scatter([point_x_pixel], [point_y_pixel], 
+                    c='red', s=10, marker='x', linewidths=3)
+    axes[0].scatter([point_x_pixel], [point_y_pixel], 
+                    c='yellow', s=20, marker='o', facecolors='none', linewidths=2)
+    axes[0].set_title("Source\n(Query Point)")
+    axes[0].axis('off')
+    
+    # Plot target image (Column 1)
+    axes[1].imshow(trg_img_display)
+    axes[1].set_title("Target")
+    axes[1].axis('off')
+    
+    for idx, (model, model_name) in enumerate(zip(models, model_names)):
+        # Column index for this model's heatmap (offset by 2 for source and target)
+        col_idx = idx + 2
+        
+        # Get model's standard size
+        standard_size = model.standard_size
+        
+        # Preprocess images
+        src_tensor = model.preprocess_image(src_image_path, target_size=(standard_size, standard_size))
+        trg_tensor = model.preprocess_image(trg_image_path, target_size=(standard_size, standard_size))
+        
+        # Extract features (no gradients needed)
+        with torch.no_grad():
+            # Extract intermediate features (output of frozen blocks)
+            src_inter = model.extract_intermediate_features(src_tensor)
+            trg_inter = model.extract_intermediate_features(trg_tensor)
+            
+            # Forward through unfrozen blocks to get final features
+            src_feats = model.forward_unfrozen_blocks(src_inter)
+            trg_feats = model.forward_unfrozen_blocks(trg_inter)
+            
+            # Get feature map dimensions
+            B, C, H, W = src_feats.shape
+            
+            # Convert normalized point to feature map coordinates
+            # Normalized coords are in [0,1], need to map to feature grid [-1,1] for grid_sample
+            point_grid_x = 2.0 * point_x_norm - 1.0
+            point_grid_y = 2.0 * point_y_norm - 1.0
+            
+            # Create grid sample coordinates: (B, 1, 1, 2)
+            src_grid = torch.tensor([[[[point_grid_x, point_grid_y]]]], 
+                                    dtype=torch.float32, device=src_feats.device)
+            
+            # Sample source descriptor at the query point
+            src_desc = F.grid_sample(src_feats, src_grid, mode='bilinear', align_corners=True)
+            src_desc = src_desc.squeeze()  # (C,)
+            
+            # Normalize features for cosine similarity
+            src_vec = F.normalize(src_desc.unsqueeze(0), p=2, dim=-1)  # (1, C)
+            trg_vecs = F.normalize(trg_feats.view(B, C, -1), p=2, dim=1)  # (B, C, H*W)
+            
+            # Compute cosine similarity
+            similarity = torch.mm(src_vec, trg_vecs.squeeze(0))  # (1, H*W)
+            heatmap = similarity.view(H, W)  # (H, W)
+            
+            # Apply temperature and softmax for probability distribution
+            heatmap_temp = heatmap / temperature
+            heatmap_temp = heatmap_temp - heatmap_temp.max()  # Stability
+            prob_map = F.softmax(heatmap_temp.flatten(), dim=0).view(H, W)
+            
+            # Convert to numpy
+            heatmap_np = prob_map.cpu().numpy()
+        
+        # Plot heatmap overlay on target
+        axes[col_idx].imshow(trg_img_display)
+        
+        # Resize heatmap to match target image size for overlay
+        trg_h, trg_w = trg_img_display.shape[:2]
+        heatmap_resized = torch.nn.functional.interpolate(
+            torch.from_numpy(heatmap_np).unsqueeze(0).unsqueeze(0),
+            size=(trg_h, trg_w),
+            mode='bilinear',
+            align_corners=True
+        ).squeeze().numpy()
+        
+        # Overlay heatmap with transparency
+        im = axes[col_idx].imshow(heatmap_resized, cmap='viridis', alpha=0.6, 
+                                 vmin=0, vmax=heatmap_resized.max())
+        axes[col_idx].set_title(f"{model_name}\n(T={temperature})")
+        axes[col_idx].axis('off')
+        
+        # Add colorbar for the heatmap
+        plt.colorbar(im, ax=axes[col_idx], fraction=0.046, pad=0.04)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        if os.path.dirname(save_path):
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches='tight', dpi=150)
+        plt.close()
+        print(f"Saved visualization to {save_path}")
+    else:
+        plt.show()
     
