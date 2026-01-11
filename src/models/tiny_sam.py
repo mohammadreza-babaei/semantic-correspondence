@@ -62,15 +62,85 @@ class TinySAMAdapter:
         self.model = self.sam_model.image_encoder
         
         # 2. Load Weights Manually
+        # 2. Load Weights Manually (with resizing)
         if weights_path is not None:
             if os.path.exists(weights_path):
-                load_weights(
-                    self.sam_model, # Load into full SAM model
-                    weights_path, 
-                    map_location=self.device, 
-                    strict=False,
-                    verbose=True
-                )
+                # Load state dict first
+                checkpoint = torch.load(weights_path, map_location=self.device)
+                state_dict, _ = extract_state_dict(checkpoint)
+                state_dict = clean_state_dict_keys(state_dict)
+                
+                # Check for shape mismatches and resize if needed
+                own_state = self.sam_model.state_dict()
+                for name, param in own_state.items():
+                    if name in state_dict:
+                        src_shape = state_dict[name].shape
+                        tgt_shape = param.shape
+                        if src_shape != tgt_shape:
+                            print(f"Resizing {name}: {src_shape} -> {tgt_shape}")
+                            # Handle Relative Position Bias Table resizing
+                            # Key usually ends in .relative_position_bias_table or .pos_embed
+                            if 'relative_position_bias_table' in name:
+                                # Shape is (num_heads, num_windows*num_windows) - logic varies
+                                # TinyViT: (n_heads, (2*wh-1) * (2*ww-1))? 
+                                # Actually usually (N, H*W). Interpolation is complex.
+                                # Simple bicubic interpolation on the table
+                                try:
+                                    # Assuming standard table shape (L, C)
+                                    src_tensor = state_dict[name]
+                                    # We treat it as square spatial grid
+                                    # L = (2*H-1) * (2*W-1)
+                                    
+                                    # TinyViT simplified: Square root assumptions
+                                    src_L, num_heads = src_tensor.shape
+                                    tgt_L, _ = tgt_shape
+                                    
+                                    src_size = int(src_L**0.5)
+                                    tgt_size = int(tgt_L**0.5)
+                                    
+                                    if src_size**2 != src_L or tgt_size**2 != tgt_L:
+                                        print(f"  Warning: Transformation skipped, non-square bias table? {src_L} -> {tgt_L}")
+                                        continue
+                                        
+                                    # (L, C) -> (1, C, H, W)
+                                    src_tensor = src_tensor.permute(1, 0).view(1, num_heads, src_size, src_size)
+                                    
+                                    # Interpolate
+                                    tgt_tensor = F.interpolate(
+                                        src_tensor, 
+                                        size=(tgt_size, tgt_size), 
+                                        mode='bicubic', 
+                                        align_corners=False
+                                    )
+                                    
+                                    # (1, C, H, W) -> (L, C)
+                                    tgt_tensor = tgt_tensor.view(num_heads, tgt_L).permute(1, 0)
+                                    state_dict[name] = tgt_tensor
+                                    print(f"  Resized specific key {name}")
+                                except Exception as e:
+                                    print(f"  Failed to resize {name}: {e}")
+                                    
+                            elif 'pos_embed' in name:
+                                # Absolute pos embed (1, C, H, W) or (1, L, C)
+                                src_tensor = state_dict[name]
+                                if src_tensor.dim() == 3: # (1, L, C)
+                                    # Reshape to spatial
+                                    B, L, C = src_tensor.shape
+                                    size = int(L**0.5)
+                                    src_tensor = src_tensor.permute(0, 2, 1).view(B, C, size, size)
+                                    # Interpolate
+                                    # Target size from current model
+                                    tgt_B, tgt_L, tgt_C = tgt_shape
+                                    tgt_size = int(tgt_L**0.5)
+                                    
+                                    new_tensor = F.interpolate(src_tensor, size=(tgt_size, tgt_size), mode='bicubic', align_corners=False)
+                                    # Back to (1, L, C)
+                                    state_dict[name] = new_tensor.flatten(2).transpose(1, 2)
+                                    print("  Resized pos_embed successfully.")
+
+                # Load the potentially modified state dict
+                self.sam_model.load_state_dict(state_dict, strict=False)
+                print("TinySAM weights loaded (with resizing).")
             else:
                 print(f"Warning: TinySAM weights '{weights_path}' not found. Using random init.")
         
