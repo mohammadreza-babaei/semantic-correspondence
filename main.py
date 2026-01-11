@@ -291,7 +291,7 @@ def evaluate(args):
     window_sizes = [int(w.strip()) for w in args.window_size.split(',')]
     window_sizes_str = '_'.join([str(w) for w in window_sizes])
     
-    evaluator = PCKEvaluator(trainer=trainer, device=device, window_sizes=window_sizes, temperature=args.temperature)
+    evaluator = PCKEvaluator(model=trainer.model, device=device, cached_dataset=trainer.cached_dataset, window_sizes=window_sizes, temperature=args.temperature)
 
     if args.plot_pair is not None:
         output_dir = "evaluations/pictures"

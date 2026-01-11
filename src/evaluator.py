@@ -9,26 +9,60 @@ from tqdm import tqdm
 import pandas as pd
 
 # Import the helpers
-from src.new_loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
+from src.loss import predict_keypoints, predict_keypoints_window, denormalize_predictions
 from src.pck import compute_pck, get_bbox_size, compute_pck_from_batch
 
 class PCKEvaluator:
-    def __init__(self, trainer, device, dataset=None, window_sizes=[5], temperature=0.02):
+    def __init__(self, model, device, dataset=None, cached_dataset=None, window_sizes=[5], temperature=0.02):
         """
         Args:
-            trainer: The Trainer instance (holds .features_cache and .model).
+            model: The model adapter (e.g. DINOv2Adapter, TinySAMAdapter).
             device: 'cuda' or 'cpu'.
-            dataset: The dataset to evaluate (optional).
-            window_sizes: List of window sizes for local refinement in predict_keypoints_window (default: [5]).
+            dataset: The dataset to evaluate (optional, required for visualization).
+            cached_dataset: Instance of CachedFeaturesDataset (optional).
+            window_sizes: List of window sizes for local refinement (default: [5]).
             temperature: Temperature for softmax during inference (default: 0.02).
         """
-        self.trainer = trainer
-        self.model = trainer.model # The adapter
+        self.model = model
         self.device = device
         self.standard_size = self.model.standard_size
         self.dataset = dataset
+        self.cached_dataset = cached_dataset
         self.window_sizes = window_sizes if isinstance(window_sizes, list) else [window_sizes]
         self.temperature = temperature
+
+    def _get_features(self, src_name, trg_name):
+        """
+        Load features for a pair of images.
+        Uses cached_dataset if available.
+        """
+        if self.cached_dataset is None:
+            raise ValueError("PCKEvaluator currently requires a cached_dataset for feature extraction.")
+
+        # Load from cache (no augmentation for eval)
+        src_data = self.cached_dataset.load_features(src_name, aug_idx=None)
+        trg_data = self.cached_dataset.load_features(trg_name, aug_idx=None)
+
+        # Helper to recursively move to device and unsqueeze 2D tensors
+        def process_feat(feat):
+            if isinstance(feat, dict):
+                return {k: process_feat(v) for k, v in feat.items()}
+            elif isinstance(feat, (list, tuple)):
+                return type(feat)(process_feat(v) for v in feat)
+            else:
+                f = feat.to(self.device)
+                if f.dim() == 2:
+                    f = f.unsqueeze(0)
+                return f
+
+        src_intermediate = process_feat(src_data['intermediate'])
+        trg_intermediate = process_feat(trg_data['intermediate'])
+
+        with torch.no_grad():
+            feat1 = self.model.forward_unfrozen_blocks(src_intermediate)
+            feat2 = self.model.forward_unfrozen_blocks(trg_intermediate)
+
+        return feat1, feat2, src_data['orig_size'], trg_data['orig_size']
 
     def compute_metrics_with_sizes(self, feat1, feat2, src_kps_std, batch, trg_sizes, alpha=0.1):
         """
@@ -128,10 +162,8 @@ class PCKEvaluator:
         trg_kps = pair['trg_kps']
         trg_bbox = pair['trg_bndbox']
         
-        # Use trainer's helper for feature loading (with error handling)
-        feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
-            src_name, trg_name, requires_grad=False
-        )
+        # Use local helper for feature loading
+        feat1, feat2, src_orig_size, trg_orig_size = self._get_features(src_name, trg_name)
         
         trg_orig_w, trg_orig_h = trg_orig_size
         src_orig_w, src_orig_h = src_orig_size
@@ -142,7 +174,7 @@ class PCKEvaluator:
         src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
         src_input = src_kps_std.to(self.device).unsqueeze(0)
         
-        # Predict Global Method (computed once)
+        # Predict Global Method
         pred_global_norm = predict_keypoints(
             feat1, feat2, src_input,
             src_img_size=(self.standard_size, self.standard_size),
@@ -413,58 +445,82 @@ class PCKEvaluator:
         print(f"Source: {s_name}")
         print(f"Target: {t_name}")
 
-        # 2. Load Features
-        feat1, feat2, src_orig_size, trg_orig_size = self.trainer._prepare_feature_pair(
-            s_name, t_name, requires_grad=False
-        )
+        # Load Features
+        feat1, feat2, src_orig_size, trg_orig_size = self._get_features(s_name, t_name)
 
-        # 3. Prepare keypoints (no visibility filtering for eval)
+        # Prepare keypoints (no visibility filtering for eval)
         src_kps_normed = src_kps_raw.clone()
         trg_kps_normed = trg_kps_raw.clone()
 
-        # src_kps_normed[:, 0] /= src_orig_size[1]
-        # src_kps_normed[:, 1] /= src_orig_size[0]
-        # trg_kps_normed[:, 0] /= trg_orig_size[1]
-        # trg_kps_normed[:, 1] /= trg_orig_size[0]
+        trg_orig_w, trg_orig_h = trg_orig_size
+        src_orig_w, src_orig_h = src_orig_size
+        
+        # Scale Source Keypoints: Original -> Standard
+        src_kps_std = src_kps_raw.clone()
+        src_kps_std[:, 0] *= (self.standard_size / src_orig_w)
+        src_kps_std[:, 1] *= (self.standard_size / src_orig_h)
+        src_input = src_kps_std.to(self.device).unsqueeze(0)
 
-        # 4. Global method
-        matches_global = self.trainer._find_soft_correspondences(
-            feat1.unsqueeze(0), feat2.unsqueeze(0)
+        # Global method
+        pred_global_norm = predict_keypoints(
+            feat1, feat2, src_input,
+            src_img_size=(self.standard_size, self.standard_size),
+            temperature=self.temperature
         )
-        matches_global = matches_global.squeeze(0)
-        pred_kps_global = self.trainer._get_predicted_keypoints(
-            src_kps_normed, matches_global
-        )
+        pred_kps_global = denormalize_predictions(pred_global_norm, trg_orig_size).squeeze(0).cpu()
 
-        # 5. Window method
-        matches_window = self.trainer._find_correspondences_window(
-            feat1.unsqueeze(0), feat2.unsqueeze(0),
-            self.window_size
+        # Window method
+        pred_window_norm = predict_keypoints_window(
+            feat1, feat2, src_input,
+            src_img_size=(self.standard_size, self.standard_size),
+            window_size=self.window_sizes[0],
+            temperature=self.temperature
         )
-        matches_window = matches_window.squeeze(0)
-        pred_kps_window = self.trainer._get_predicted_keypoints(
-            src_kps_normed, matches_window
-        )
+        pred_kps_window = denormalize_predictions(pred_window_norm, trg_orig_size).squeeze(0).cpu()
 
-        # 6. Compute PCK
-        pck_global = compute_pck(
+        # Compute PCK
+        pck_global, _ = compute_pck(
             pred_kps_global, trg_kps_normed, trg_bbox, alpha=alpha
         )
-        pck_window = compute_pck(
+        pck_window, _ = compute_pck(
             pred_kps_window, trg_kps_normed, trg_bbox, alpha=alpha
         )
 
         print(f"PCK (Global): {pck_global:.4f}")
         print(f"PCK (Window): {pck_window:.4f}")
+        
+        # Calculate Errors (Mean pixel distance for valid points)
+        # Using simple L2 distance for matched points
+        valid_mask = (trg_kps_normed[:, 0] > 0) & (trg_kps_normed[:, 1] > 0)
+        
+        if valid_mask.sum() > 0:
+            err_g = (pred_kps_global[valid_mask] - trg_kps_normed[valid_mask]).norm(dim=1).mean().item()
+            err_w = (pred_kps_window[valid_mask] - trg_kps_normed[valid_mask]).norm(dim=1).mean().item()
+        else:
+            err_g = 0.0
+            err_w = 0.0
 
-        # 7. Visualize
+        # Visualize
         os.makedirs(output_dir, exist_ok=True)
         out_path = os.path.join(output_dir, f"{pair_id.replace(':', '_')}_comparison.png")
 
-        self._visualize_correspondences_comparison(
-            sample, matches_global, matches_window,
-            pck_global, pck_window, alpha, out_path
-        )
+        # Reuse visualization dictionary format expected by _plot_pair_comparison
+        res = {
+            'src_path': s_name,
+            'trg_path': t_name,
+            'src_kps': src_kps_raw.numpy(),
+            'trg_kps': trg_kps_raw.numpy(),
+            'src_bbox': sample.get('src_bndbox'),
+            'trg_bbox': sample['trg_bndbox'], # gt bbox
+            'pred_global': pred_kps_global.numpy(),
+            'pred_window': pred_kps_window.numpy(),
+            'pck_g': pck_global,
+            'pck_w': pck_window,
+            'err_g': err_g,
+            'err_w': err_w
+        }
+
+        self._plot_pair_comparison(res, out_path)
         print(f"Saved comparison to: {out_path}")
 
     def evaluate_pair_by_index(self, pair_idx, output_dir="single_evals", alpha=0.1):
@@ -472,7 +528,7 @@ class PCKEvaluator:
         Runs evaluation on a single pair by index.
         Computes AND Visualizes both Global and Window methods.
         """
-        # 1. Retrieve the single sample
+        # Retrieve the single sample
         if pair_idx < 0 or pair_idx >= len(self.dataset):
             print(f"Error: Index {pair_idx} out of bounds.")
             return

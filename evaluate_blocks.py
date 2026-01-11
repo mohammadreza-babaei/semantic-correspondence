@@ -61,7 +61,7 @@ from src.plotting import plot_block_weights, compute_pca, plot_pca_features
 
 from src.models import SAMAdapter, DINOv2Adapter, DINOv3Adapter
 from src.spair_dataset import SPair71kPairs
-from src.new_loss import predict_keypoints, denormalize_predictions
+from src.loss import predict_keypoints, denormalize_predictions
 from src.pck import compute_pck
 
 

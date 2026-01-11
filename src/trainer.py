@@ -15,7 +15,7 @@ from src.cached_features_dataset import CachedFeaturesDataset
 import gc
 
 
-from src.new_loss import loss as the_new_loss, predict_keypoints, predict_keypoints_window
+from src.loss import loss, predict_keypoints, predict_keypoints_window
 from src.pck import compute_pck_from_batch
 
 from src.plotting import plot_training_history  
@@ -42,7 +42,7 @@ class Trainer():
         self.cached_dataset = None  # Set in train()
 
         # Initialize Evaluator for validation consistency
-        self.evaluator = PCKEvaluator(self, self.device, temperature=self.temperature)
+        self.evaluator = PCKEvaluator(model=self.model, device=self.device, temperature=self.temperature)
         self.best_val_loss = float('inf')
         self.start_epoch = 0
 
@@ -79,9 +79,7 @@ class Trainer():
         self.learning_rate = checkpoint.get('learning_rate', self.learning_rate)
         self.fixed_lr = checkpoint.get('fixed_lr', self.fixed_lr)
         
-        # We don't restore optimizer/scheduler here because they need the model parameters
-        # which were just updated, and they are typically initialized in train().
-        # We store their states to be applied after initialization.
+       
         self._deferred_optimizer_state = checkpoint.get('optimizer_state_dict')
         self._deferred_scheduler_state = checkpoint.get('scheduler_state_dict')
         
@@ -222,7 +220,7 @@ class Trainer():
         trg_kps_batch = trg_kps_vis.unsqueeze(0)
         
         # Compute loss - all images are standard_size now
-        loss = the_new_loss(
+        loss_value = loss(
             feat1, feat2, 
             src_kps_batch, trg_kps_batch, 
             src_img_size=(self.model.standard_size, self.model.standard_size),
@@ -233,17 +231,17 @@ class Trainer():
         # Add L2 feature regularization if enabled
         if self.feature_reg > 0:
             feat_reg_loss = self.feature_reg * (feat1.pow(2).mean() + feat2.pow(2).mean())
-            loss = loss + feat_reg_loss
+            loss_value = loss_value + feat_reg_loss
         
         # Backward pass (gradients flow through unfrozen blocks)
         # Scale loss for gradient accumulation
-        loss_scaled = loss / accumulation_steps
+        loss_scaled = loss_value / accumulation_steps
         loss_scaled.backward()
         
         # Gradient clipping remains here (gradients are accumulated)
         torch.nn.utils.clip_grad_norm_(self.model.model.parameters(), max_norm=1.0)
         
-        return loss.item()
+        return loss_value.item()
     
 
     def val_step(self, batch):
@@ -264,14 +262,14 @@ class Trainer():
         
         with torch.no_grad():
             if len(src_kps_vis) > 0:
-                loss = the_new_loss(
+                loss_val_tensor = loss(
                     feat1, feat2, 
                     src_kps_vis.unsqueeze(0), trg_kps_vis.unsqueeze(0), 
                     src_img_size=(self.model.standard_size, self.model.standard_size),
                     trg_img_size=(self.model.standard_size, self.model.standard_size),
                     temperature=self.temperature
                 )
-                loss_val = loss.item()
+                loss_val = loss_val_tensor.item()
             else:
                 loss_val = 0.0
 
