@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import timm
 import os
+from src.models.checkpoint_utils import safe_torch_load, extract_state_dict, clean_state_dict_keys
 
 # TinyViT-21M-512 Native Resolution
 STANDARD_SIZE = 512
@@ -42,11 +43,18 @@ class TinyViTAdapter:
         # 2. Load Custom Weights (if provided)
         if weights_path is not None and os.path.exists(weights_path):
             print(f"Loading custom weights from {weights_path}")
-            checkpoint = torch.load(weights_path, map_location='cpu')
-            if 'model' in checkpoint: checkpoint = checkpoint['model']
-            if 'state_dict' in checkpoint: checkpoint = checkpoint['state_dict']
+            checkpoint = safe_torch_load(weights_path, map_location='cpu')
+            state_dict, format_info = extract_state_dict(checkpoint, key_priority=['model_state', 'model_state_dict'])
+            print(f"Loading from {format_info}")
             
-            self.model.load_state_dict(checkpoint, strict=False)
+            # Handle TinyViT's specific nested format from get_model_state()
+            if isinstance(state_dict, dict) and 'model_state_dict' in state_dict:
+                state_dict = state_dict['model_state_dict']
+            
+            state_dict = clean_state_dict_keys(state_dict)
+            msg = self.model.load_state_dict(state_dict, strict=False)
+            print(f"Weights loaded. Missing keys: {len(msg.missing_keys)}, Unexpected: {len(msg.unexpected_keys)}")
+
 
         self.model.eval()
 
