@@ -146,7 +146,4 @@ Your `--dataset-path` should point to a folder structured like this:
 ├──SPair-71k/
 |  ├── JPEGImages/      # Contains category folders (cat, dog, etc.)
 |  └── PairAnnotation/  # Contains train/test split folders
-└──ap10k/
-   ├── annotations/      # Contains category folders (cat, dog, etc.)
-   └── data/  # Contains train/test split folders
 ```
