@@ -2,6 +2,36 @@
 import torch
 import peft
 from peft import LoraConfig, get_peft_model
+import os
+from pathlib import Path
+
+
+def save_lora_weights(peft_model, save_dir, checkpoint_name="lora_weights"):
+    """
+    Save LoRA weights to disk before merging.
+    
+    Args:
+        peft_model: A PEFT model with LoRA adapters.
+        save_dir: Directory to save the LoRA weights.
+        checkpoint_name: Name for the checkpoint (default: "lora_weights").
+    
+    Returns:
+        str: Path to the saved LoRA weights.
+    """
+    save_path = Path(save_dir) / checkpoint_name
+    save_path.mkdir(parents=True, exist_ok=True)
+    
+    # Save using PEFT's save_pretrained which saves only the adapter weights
+    peft_model.save_pretrained(str(save_path))
+
+    # Calculate size of saved weights from .safetensors files
+    size_bytes = sum(f.stat().st_size for f in save_path.glob("*.safetensors"))
+    size_mb = size_bytes / (1024 * 1024)
+    
+    print(f"Saved LoRA weights ({size_mb:.2f} MB) to: {save_path}")
+    return str(save_path)
+
+
 
 def apply_lora(model, model_type, rank=8, alpha=16, num_unfrozen_blocks=2):
     """

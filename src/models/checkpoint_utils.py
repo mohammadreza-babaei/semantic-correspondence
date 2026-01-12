@@ -8,7 +8,10 @@ duplication and ensure consistent behavior.
 
 import os
 import torch
-
+from pathlib import Path
+import peft
+import copy
+from src.lora_utils import save_lora_weights
 
 def safe_torch_load(path, map_location='cpu'):
     """Load a checkpoint file with proper handling for different PyTorch versions.
@@ -128,22 +131,23 @@ def get_merged_state_dict(model):
     Returns:
         A clean state dict with merged weights
     """
-    try:
-        import peft
-        import copy
-        if isinstance(model, peft.PeftModel):
-            print("Merging LoRA adapters into base model for checkpoint...")
-            # CRITICAL: Copy the model first, since merge_and_unload() modifies in-place
-            # and would destroy the LoRA adapters on the original training model
-            model_copy = copy.deepcopy(model)
-            merged_model = model_copy.merge_and_unload(progressbar=False)
-            state_dict = merged_model.state_dict()
-            print(f"LoRA merge complete - {len(state_dict)} parameters")
-            # Cleanup the copy to free memory
-            del model_copy, merged_model
-            return state_dict
-    except ImportError:
-        pass
+    if isinstance(model, peft.PeftModel):
+        print("Merging LoRA adapters into base model for checkpoint...")
+        
+        # Save LoRA weights before merging
+        lora_dir = Path("checkpoints") / "lora_weights_backup"
+        print(f"Saving LoRA weights before merge...")
+        save_lora_weights(model, str(lora_dir))
+        
+        # CRITICAL: Copy the model first, since merge_and_unload() modifies in-place
+        # and would destroy the LoRA adapters on the original training model
+        model_copy = copy.deepcopy(model)
+        merged_model = model_copy.merge_and_unload(progressbar=False)
+        state_dict = merged_model.state_dict()
+        print(f"LoRA merge complete - {len(state_dict)} parameters")
+        # Cleanup the copy to free memory
+        del model_copy, merged_model
+        return state_dict
     
     # Not a PEFT model, return regular state dict
     return model.state_dict()
