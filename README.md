@@ -13,6 +13,9 @@ This tool provides a command-line interface (CLI) for fine-tuning **DINOv2**, **
 * **Experiment Tracking:** Built-in integration with **Weights and Biases (WandB)**.
 * **Flexible Training:** Configure learning rates, frozen blocks, and epochs via CLI.
 
+## Checkpoints
+The checkpoints can be found at https://drive.google.com/drive/folders/18vrMoX1RnvIRjpV7AUmjufQk3OTrijR2?usp=drive_link
+
 ---
 
 ## Guide
