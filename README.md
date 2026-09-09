@@ -1,3 +1,7 @@
+## Project Report
+
+📄 [View the full project report (PDF)](./s343333_project5.pdf)
+
 # Datasets
 
 ## SPair-71k
